@@ -270,7 +270,7 @@ function buildRolePanelComponents(guild) {
 function buildVerifyAdminPanel(guild) {
   const settings = getGuildSettings(guild.id);
   const embed = new EmbedBuilder()
-    .setTitle('⚙️ メンバー認証 管理ダッシュボード')
+    .setTitle('⚙️️ メンバー認証 管理ダッシュボード')
     .setColor(0x5865F2)
     .addFields(
       {
@@ -443,6 +443,16 @@ function startBirthdayChecker(c) {
 client.once(Events.ClientReady, async (c) => {
   console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
   
+  // 全サーバーのメンバーを強制フェッチしてキャッシュを完全に同期する
+  for (const [guildId, guild] of c.guilds.cache) {
+    try {
+      await guild.members.fetch();
+      console.log(`[キャッシュ] ${guild.name} のメンバーを取得しました。`);
+    } catch (err) {
+      console.error(`[キャッシュエラー] ${guild.name} のメンバー取得に失敗しました:`, err);
+    }
+  }
+
   // 起動時にすでにVCにいるメンバーの時間を記録（初期化）
   const now = Date.now();
   for (const [guildId, guild] of c.guilds.cache) {
