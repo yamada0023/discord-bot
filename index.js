@@ -30,7 +30,8 @@ const EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'
 // Bot起動時にコマンドを登録
 client.on(discord.Events.ClientReady, async () => {
     console.log('Logged in as ' + client.user.tag);
-
+client.user.setStatus('online');
+  client.user.setActivity('稼働中', { type: 0 });
     const commands = [
         new discord.SlashCommandBuilder()
             .setName('verify')
