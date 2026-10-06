@@ -44,13 +44,13 @@ const client = new Client({
 
 // --- 設定データ保持用変数 ---
 let verifyRoleId = '1537841157315231896'; // 認証ロールID
-let userInfoChannelId = null; // ログチャンネルID
+let userInfoChannelId = null; // ログチャンネルID（認証用）
 let roleIds = ['1537841157315231896']; // ロールパネル用ロールIDリスト
 
 // 一時データ（認証コード保持）
 const activeCaptchas = new Map();
 
-// --- ログ送信関数 ---
+// --- ログ送信関数（認証用ログのみで使用） ---
 async function sendLog(guild, member, title, description, color = 0x00FF00) {
   if (!userInfoChannelId) return;
   try {
@@ -150,8 +150,7 @@ function buildRoleAdminPanel() {
     .setTitle('⚙️ ロールパネル 管理ダッシュボード')
     .setColor(0x5865F2)
     .addFields(
-      { name: '対象ロール一覧 (複数指定可)', value: roleDisplay },
-      { name: 'ログチャンネル', value: userInfoChannelId ? `<#${userInfoChannelId}>` : '未設定' }
+      { name: '対象ロール一覧 (複数指定可)', value: roleDisplay }
     );
 
   const roleSelectRow = new ActionRowBuilder().addComponents(
@@ -162,20 +161,11 @@ function buildRoleAdminPanel() {
       .setMaxValues(25)
   );
 
-  const channelSelectRow = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder()
-      .setCustomId('select_log_channel')
-      .setPlaceholder('ログ出力先のテキストチャンネルを選択')
-      .setChannelTypes(ChannelType.GuildText)
-      .setMinValues(0)
-      .setMaxValues(1)
-  );
-
   const buttonRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('admin_deploy_role_panel').setLabel('ここにロール選択パネルを設置').setStyle(ButtonStyle.Success)
   );
 
-  return { embeds: [embed], components: [roleSelectRow, channelSelectRow, buttonRow] };
+  return { embeds: [embed], components: [roleSelectRow, buttonRow] };
 }
 
 // --- スラッシュコマンド登録 ---
@@ -191,7 +181,6 @@ client.on(Events.ClientReady, async () => {
     new SlashCommandBuilder().setName('role-panel').setDescription('ロール選択パネルを設置します')
   ].map(command => command.toJSON());
 
-  // ログイン済みの client.token を直接渡す（修正箇所）
   const rest = new REST({ version: '10' }).setToken(client.token);
 
   try {
@@ -267,12 +256,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (interaction.customId === 'select_log_channel') {
         userInfoChannelId = interaction.values[0] || null;
-        
-        if (interaction.message.embeds[0]?.title?.includes('認証')) {
-          await interaction.update(buildVerifyAdminPanel());
-        } else {
-          await interaction.update(buildRoleAdminPanel());
-        }
+        await interaction.update(buildVerifyAdminPanel());
         return;
       }
     }
@@ -306,7 +290,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // モーダル送信処理
+    // モーダル送信処理（認証用）
     if (interaction.isModalSubmit() && interaction.customId === 'modal_submit_captcha') {
       const userAnswer = interaction.fields.getTextInputValue('input_captcha_answer').trim().toUpperCase();
       const correctAnswer = activeCaptchas.get(interaction.user.id);
@@ -326,6 +310,7 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
           await interaction.member.roles.add(role);
           await interaction.reply({ content: `🎉 **認証成功！** <@&${verifyRoleId}> ロールが付与されました。`, ephemeral: true });
+          // 認証完了時は指定ログチャンネルに通知を送る
           await sendLog(interaction.guild, interaction.member, '🔒 認証成功', `ユーザー: ${interaction.user.tag} (<@${interaction.user.id}>)`);
         } catch (err) {
           console.error('ロール付与エラー:', err);
@@ -367,7 +352,7 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.showModal(modal);
       }
 
-      // ロール切替ボタン
+      // ロール切替ボタン（※ログ通知を出さない改修箇所）
       if (interaction.customId.startsWith('toggle_role_')) {
         await interaction.deferReply({ ephemeral: true });
 
@@ -381,12 +366,12 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
           if (interaction.member.roles.cache.has(targetRoleId)) {
             await interaction.member.roles.remove(role);
+            // 本人のみに一時メッセージを返却（ログチャンネルへの sendLog は削除済み）
             await interaction.editReply({ content: `❌ **${role.name}** ロールを解除しました。` });
-            await sendLog(interaction.guild, interaction.member, '🏷️ ロール解除', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0xFF0000);
           } else {
             await interaction.member.roles.add(role);
+            // 本人のみに一時メッセージを返却（ログチャンネルへの sendLog は削除済み）
             await interaction.editReply({ content: `✅ **${role.name}** ロールが付与されました！` });
-            await sendLog(interaction.guild, interaction.member, '🏷️ ロール付与', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0x00FF00);
           }
         } catch (error) {
           console.error('ロール操作エラー:', error);
