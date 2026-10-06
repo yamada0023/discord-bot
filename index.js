@@ -125,6 +125,9 @@ function saveSettings() {
 // ============================================================
 const activeCaptchas = new Map();
 
+// VC入室時間を管理するマップ: key = `${guildId}_${userId}`, value = 入室タイムスタンプ (ms)
+const vcJoinTimes = new Map();
+
 
 // ============================================================
 // 認証ログ
@@ -170,11 +173,9 @@ function createCaptchaImage(text) {
   const canvas = createCanvas(300, 100);
   const ctx = canvas.getContext('2d');
 
-  // 背景色
   ctx.fillStyle = '#2f3136';
   ctx.fillRect(0, 0, 300, 100);
 
-  // ノイズ（線）
   for (let i = 0; i < 6; i++) {
     ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`;
     ctx.lineWidth = Math.random() * 3 + 1;
@@ -184,13 +185,11 @@ function createCaptchaImage(text) {
     ctx.stroke();
   }
 
-  // ノイズ（点）
   for (let i = 0; i < 100; i++) {
     ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;
     ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);
   }
 
-  // 文字を描画
   ctx.font = 'bold 45px sans-serif';
   ctx.textBaseline = 'middle';
 
@@ -362,7 +361,10 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('認証の設定管理画面を表示します'),
     new SlashCommandBuilder()
       .setName('verify')
-      .setDescription('認証パネルを設置します')
+      .setDescription('認証パネルを設置します'),
+    new SlashCommandBuilder()
+      .setName('vc-time')
+      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します')
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -372,6 +374,28 @@ client.once(Events.ClientReady, async (c) => {
   } catch (error) {
     console.error('[スラッシュコマンド] 登録エラー:', error);
   }
+});
+
+
+// ============================================================
+// イベント: ボイスチャンネル入退室の監視（滞在時間計測用）
+// ============================================================
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const userId = newState.member.id;
+  const guildId = newState.guild.id;
+  const key = `${guildId}_${userId}`;
+  const now = Date.now();
+
+  // VCに入室（またはチャンネル移動）した場合
+  if (!oldState.channelId && newState.channelId) {
+    vcJoinTimes.set(key, now);
+  }
+  // VCを完全に退出した場合
+  else if (oldState.channelId && !newState.channelId) {
+    vcJoinTimes.delete(key);
+  }
+  // ※別のVCに移動した場合はそのまま継続、またはリセットするかはお好みですが、今回は入室時点からを継続とします
 });
 
 
@@ -422,6 +446,65 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
       }
       await interaction.reply({ content: '管理ダッシュボードの「ここに設置」ボタンをご利用ください。', ephemeral: true });
+    }
+
+    else if (commandName === 'vc-time') {
+      await interaction.deferReply();
+
+      // サーバー内のすべてのボイスチャンネルを取得
+      const voiceChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🎙️ VC 滞在時間一覧')
+        .setColor(0x00FF00)
+        .setTimestamp();
+
+      let activeVcCount = 0;
+      const now = Date.now();
+
+      for (const [channelId, channel] of voiceChannels) {
+        const members = channel.members;
+        if (members.size > 0) {
+          activeVcCount++;
+          let memberLines = [];
+
+          for (const [memberId, member] of members) {
+            const key = `${guild.id}_${memberId}`;
+            let joinTime = vcJoinTimes.get(key);
+
+            // ボット起動前に既に入っていた等で記録がない場合は、現在の時刻を仮の入室時間とする
+            if (!joinTime) {
+              joinTime = now;
+              vcJoinTimes.set(key, now);
+            }
+
+            const diffMs = now - joinTime;
+            const totalSeconds = Math.floor(diffMs / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+
+            let timeString = '';
+            if (hours > 0) timeString += `${hours}時間 `;
+            if (minutes > 0 || hours > 0) timeString += `${minutes}分 `;
+            timeString += `${seconds}秒`;
+
+            memberLines.push(`• **${member.displayName}** : ⏱️ \`${timeString}\`（入室中）`);
+          }
+
+          embed.addFields({
+            name: `🔊 ${channel.name} (${members.size}人)`,
+            value: memberLines.join('\n'),
+            inline: false
+          });
+        }
+      }
+
+      if (activeVcCount === 0) {
+        embed.setDescription('現在、誰もボイスチャンネルに参加していません。');
+      }
+
+      await interaction.editReply({ embeds: [embed] });
     }
   }
 
@@ -475,7 +558,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
-    // ① 認証ボタンを押したとき：サブ垢チェック ＆ 画像送信 ＆ 入力用ボタンの提示
     else if (interaction.customId === 'start_verify') {
       const user = interaction.user;
       const createdTimestamp = user.createdTimestamp;
@@ -512,7 +594,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ embeds: [embed], files: [attachment], components: [row], ephemeral: true });
     }
 
-    // ② 「回答を入力する」ボタンを押したとき：モーダル（回答欄）を表示する
     else if (interaction.customId === 'open_verify_modal') {
       const modal = new ModalBuilder()
         .setCustomId('verify_modal')
