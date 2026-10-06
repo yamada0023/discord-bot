@@ -170,11 +170,11 @@ function createCaptchaImage(text) {
   const canvas = createCanvas(300, 100);
   const ctx = canvas.getContext('2d');
 
-  // 背景色（グラデーションや単色）
+  // 背景色
   ctx.fillStyle = '#2f3136';
   ctx.fillRect(0, 0, 300, 100);
 
-  // ノイズ（ランダムな線）
+  // ノイズ（線）
   for (let i = 0; i < 6; i++) {
     ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`;
     ctx.lineWidth = Math.random() * 3 + 1;
@@ -184,7 +184,7 @@ function createCaptchaImage(text) {
     ctx.stroke();
   }
 
-  // ノイズ（ランダムな点）
+  // ノイズ（点）
   for (let i = 0; i < 100; i++) {
     ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;
     ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);
@@ -475,7 +475,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
-    // 認証ボタンを押したとき：サブ垢チェック ＆ 画像生成してモーダル表示
+    // ① 認証ボタンを押したとき：サブ垢チェック ＆ 画像送信 ＆ 入力用ボタンの提示
     else if (interaction.customId === 'start_verify') {
       const user = interaction.user;
       const createdTimestamp = user.createdTimestamp;
@@ -498,32 +498,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setTitle('画像認証')
-        .setDescription('下の画像に表示されている6文字の半角英数字を入力してください。')
+        .setDescription('下の画像に表示されている6文字の半角英数字を確認し、下の「回答を入力する」ボタンを押してください。')
         .setImage('attachment://captcha.png')
         .setColor(0x5865F2);
 
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_verify_modal')
+          .setLabel('✏️ 回答を入力する')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.reply({ embeds: [embed], files: [attachment], components: [row], ephemeral: true });
+    }
+
+    // ② 「回答を入力する」ボタンを押したとき：モーダル（回答欄）を表示する
+    else if (interaction.customId === 'open_verify_modal') {
       const modal = new ModalBuilder()
         .setCustomId('verify_modal')
         .setTitle('メンバー認証（画像入力）');
 
       const textInput = new TextInputBuilder()
         .setCustomId('verify_code_input')
-        .setLabel('画像の中の文字を入力')
+        .setLabel('画像の中の6文字を入力してください')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(6)
         .setMinLength(6);
 
       modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-
-      // 画像を添付して返信する（エフェメラルで本人にだけ見えるようにする）
-      await interaction.reply({ embeds: [embed], files: [attachment], ephemeral: true });
-
-      // モーダルを直接出せないため、ボタンからモーダルを出すか、または別方式にする必要があるため注意
-      // ※Discordの仕様上、ボタンクリックから直接 showModal を呼ばないとモーダルが出せません。
-      // 画像を同時に出したい場合は、通常の返信メッセージにボタンを置き、そこからモーダルを出すか、
-      // またはモーダル内に画像を表示することはDiscordの仕様上できないため、
-      // 「ボタンを押す -> 画像が表示されたメッセージが届く -> その下の入力ボタンを押す」形にするのが一般的です。
+      await interaction.showModal(modal);
     }
 
     else if (interaction.customId.startsWith('toggle_role_')) {
