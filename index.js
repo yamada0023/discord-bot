@@ -19,7 +19,10 @@ const {
   TextInputStyle, 
   AttachmentBuilder,
   EmbedBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  REST,
+  Routes,
+  SlashCommandBuilder
 } = require('discord.js');
 const { createCanvas } = require('@napi-rs/canvas');
 
@@ -108,7 +111,7 @@ function buildAdminPanel() {
   const embed = new EmbedBuilder()
     .setTitle('⚙️ Bot管理ダッシュボード')
     .setColor(0x5865F2)
-    .setDescription('ボタンを押してDiscord上で各種設定を行えます。')
+    .setDescription('ボタンを押して各種設定を行えます。')
     .addFields(
       { name: '現在の付与ロールID', value: verifyRoleId ? `<@&${verifyRoleId}> (\`${verifyRoleId}\`)` : '未設定', inline: false },
       { name: '現在のログチャンネル', value: userInfoChannelId ? `<#${userInfoChannelId}> (\`${userInfoChannelId}\`)` : '未設定', inline: false },
@@ -128,28 +131,70 @@ function buildAdminPanel() {
   return { embeds: [embed], components: [row1, row2] };
 }
 
-// Bot起動時
+// Bot起動時にアプリコマンド（スラッシュコマンド）をDiscordに登録
 client.on(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   client.user.setStatus('online');
   client.user.setActivity('認証管理中', { type: 0 });
-});
 
-// コマンド処理
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) return;
+  // アプリコマンドの定義
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('setup-verify')
+      .setDescription('認証用ロールやログ送信先チャンネルを設定します'),
+    new SlashCommandBuilder()
+      .setName('verify')
+      .setDescription('認証パネルを表示します'),
+    new SlashCommandBuilder()
+      .setName('setup-panel')
+      .setDescription('リアクション方式のロールパネルを作成します')
+  ].map(command => command.toJSON());
 
-  // 管理パネル呼び出しコマンド: !admin
-  if (message.content === '!admin') {
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return message.reply('❌ このコマンドは管理者のみ使用できます。');
-    }
-    await message.channel.send(buildAdminPanel());
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
+  try {
+    console.log('アプリコマンドの登録を開始します...');
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('アプリコマンドの登録が完了しました！');
+  } catch (error) {
+    console.error('アプリコマンドの登録中にエラーが発生しました:', error);
   }
 });
 
-// インタラクション（ボタン・モーダル処理）
+// インタラクション（スラッシュコマンド・ボタン・モーダル処理）
 client.on(Events.InteractionCreate, async interaction => {
+
+  // --- スラッシュコマンド（プロフィール画面の送信ボタン等）の処理 ---
+  if (interaction.isChatInputCommand()) {
+    
+    // setup-verify コマンド：管理ダッシュボードを表示
+    if (interaction.commandName === 'setup-verify') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ このコマンドは管理者のみ使用できます。', ephemeral: true });
+      }
+      return interaction.reply(buildAdminPanel());
+    }
+
+    // verify コマンド：直接認証パネルを設置
+    if (interaction.commandName === 'verify') {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('start_captcha').setLabel('画像認証を開始する').setStyle(ButtonStyle.Primary)
+      );
+
+      return interaction.reply({
+        content: '🔒 **サーバー参加認証**\n以下のボタンを押して画像認証（5桁コード入力）を完了してください。',
+        components: [row]
+      });
+    }
+
+    // setup-panel コマンド：リアクション用パネルの案内
+    if (interaction.commandName === 'setup-panel') {
+      return interaction.reply({ content: 'リアクション認証をご利用の場合は、上記の `verify` または `setup-verify` の画像認証パネルを推奨しています。', ephemeral: true });
+    }
+  }
 
   // --- 管理パネルのボタン操作 ---
   if (interaction.isButton() && interaction.customId.startsWith('admin_')) {
