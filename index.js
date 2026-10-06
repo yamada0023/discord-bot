@@ -220,7 +220,6 @@ async function processQueue(guildId) {
     const settings = getGuildSettings(guildId);
     const speaker = settings.speakerId || 3;
 
-    // 高速なVOICEVOX互換APIエンドポイントを利用（環境変数で上書き可能）
     const apiEndpoint = process.env.VOICEVOX_API_URL || 'https://voicevox.su-shiki.com/su-shikiapis/synthesis';
     const params = new URLSearchParams({
       speaker: speaker,
@@ -595,6 +594,10 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+      .setName('setup-ticket')
+      .setDescription('チケット作成パネルを指定チャンネルに設置します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
       .setName('vc-time')
       .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),
     new SlashCommandBuilder()
@@ -758,6 +761,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       const panel = buildBirthdayAdminPanel(guild);
       await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'setup-ticket') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('🎫 お問い合わせ・サポートチケット')
+        .setDescription('運営スタッフへの質問や個別のお問い合わせがある場合は、下のボタンを押してチケットを作成してください。\n作成された専用チャンネルはあなたと管理者のみ閲覧できます。')
+        .setColor(0x5865F2);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('create_ticket')
+          .setLabel('🎫 チケットを作成する')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.channel.send({ embeds: [embed], components: [row] });
+      await interaction.reply({ content: 'チケット作成パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
     else if (commandName === 'birthday') {
@@ -1036,6 +1060,96 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await member.roles.add(roleId);
         await interaction.reply({ content: `<@&${roleId}> を付与しました。`, ephemeral: true });
       }
+    }
+    // ==========================================
+    // チケット作成ボタンの処理
+    // ==========================================
+    else if (interaction.customId === 'create_ticket') {
+      const guild = interaction.guild;
+      const user = interaction.user;
+
+      // すでに同じユーザーのチケットチャンネルが存在するかチェック
+      const existingChannel = guild.channels.cache.find(
+        c => c.name === `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`
+      );
+
+      if (existingChannel) {
+        return interaction.reply({ content: `❌ すでにオープンされているチケットチャンネルがあります: <#${existingChannel.id}>`, ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        // プライベートチャンネルの作成
+        const ticketChannel = await guild.channels.create({
+          name: `ticket-${user.username}`,
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            {
+              id: guild.roles.everyone.id, // @everyone は閲覧不可
+              deny: [PermissionFlagsBits.ViewChannel]
+            },
+            {
+              id: user.id, // チケット作成者本人は閲覧・送信可能
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.ReadMessageHistory
+              ]
+            },
+            {
+              id: client.user.id, // ボット自身も管理可能に
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.ManageChannels
+              ]
+            }
+          ]
+        });
+
+        const ticketEmbed = new EmbedBuilder()
+          .setTitle(`🎫 チケット: ${user.tag}`)
+          .setDescription('お問い合わせ内容をご記入ください。運営スタッフが確認次第対応いたします。\n\n用事が済んだら下の **「🔒 チケットを閉じる」** ボタンを押してください。')
+          .setColor(0x00FF00)
+          .setTimestamp();
+
+        const closeRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('close_ticket')
+            .setLabel('🔒 チケットを閉じる')
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        await ticketChannel.send({
+          content: `<@${user.id}> さん、スタッフがお手伝いします！`,
+          embeds: [ticketEmbed],
+          components: [closeRow]
+        });
+
+        await interaction.editReply({ content: `✅ チケットチャンネルを作成しました！ 👉 <#${ticketChannel.id}>` });
+      } catch (error) {
+        console.error('チケット作成エラー:', error);
+        await interaction.editReply({ content: '❌ チケットチャンネルの作成に失敗しました（ボットに「チャンネルの管理」権限があるか確認してください）。' });
+      }
+    }
+    // ==========================================
+    // チケットクローズ（削除）ボタンの処理
+    // ==========================================
+    else if (interaction.customId === 'close_ticket') {
+      const channel = interaction.channel;
+      if (!channel.name.startsWith('ticket-')) {
+        return interaction.reply({ content: '❌ このコマンドはチケットチャンネルでのみ使用できます。', ephemeral: true });
+      }
+
+      await interaction.reply({ content: '🔒 5秒後にこのチケットチャンネルを削除します...' });
+      setTimeout(async () => {
+        try {
+          await channel.delete();
+        } catch (err) {
+          console.error('チケット削除エラー:', err);
+        }
+      }, 5000);
     }
   }
 
