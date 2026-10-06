@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@discordjs/rest": "^2.6.3",
+    "@discordjs/voice": "^0.19.2",
     "@napi-rs/canvas": "^1.0.10",
     "discord-api-types": "^0.38.56",
     "discord.js": "^14.27.0"

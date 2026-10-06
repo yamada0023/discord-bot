@@ -14,7 +14,7 @@ http.createServer((req, res) => {
 
 
 // ============================================================
-// Discord.js & Canvas
+// Discord.js & @discordjs/voice & Canvas
 // ============================================================
 
 const {
@@ -38,6 +38,11 @@ const {
   ChannelType,
   AttachmentBuilder
 } = require('discord.js');
+
+const {
+  joinVoiceChannel,
+  getVoiceConnection
+} = require('@discordjs/voice');
 
 const { createCanvas } = require('@napi-rs/canvas');
 
@@ -103,7 +108,7 @@ function defaultGuildSettings() {
     userInfoChannelId: null,
     roleIds: ['1537841157315231896'],
     logChannelId: null,
-    birthdayChannelId: null // 誕生日のお祝いメッセージを送るチャンネル
+    birthdayChannelId: null
   };
 }
 
@@ -270,7 +275,7 @@ function buildRolePanelComponents(guild) {
 function buildVerifyAdminPanel(guild) {
   const settings = getGuildSettings(guild.id);
   const embed = new EmbedBuilder()
-    .setTitle('⚙️️ メンバー認証 管理ダッシュボード')
+    .setTitle('⚙ メンバー認証 管理ダッシュボード')
     .setColor(0x5865F2)
     .addFields(
       {
@@ -506,7 +511,19 @@ client.once(Events.ClientReady, async (c) => {
         sub.setName('show')
           .setDescription('登録されている誕生日を確認します')
           .addUserOption(o => o.setName('user').setDescription('確認したいユーザー（省略時は自分）').setRequired(false))
-      )
+      ),
+    new SlashCommandBuilder()
+      .setName('join')
+      .setDescription('ボットを指定したボイスチャンネルに参加させます')
+      .addChannelOption(option =>
+        option.setName('channel')
+          .setDescription('参加させたいボイスチャンネル（省略時はあなたがいるVC）')
+          .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('leave')
+      .setDescription('ボットをボイスチャンネルから退出させます')
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -687,6 +704,46 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       await interaction.editReply({ embeds: [embed] });
+    }
+
+    // VCに参加する機能
+    else if (commandName === 'join') {
+      const targetChannel = interaction.options.getChannel('channel') || interaction.member.voice.channel;
+
+      if (!targetChannel) {
+        return interaction.reply({ content: '❌ 参加するボイスチャンネルを指定するか、あなたがボイスチャンネルに参加した状態で実行してください。', ephemeral: true });
+      }
+
+      try {
+        joinVoiceChannel({
+          channelId: targetChannel.id,
+          guildId: guild.id,
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: false // 必要に応じてスピーカーミュートにする場合は true
+        });
+
+        await interaction.reply({ content: `🔊 **${targetChannel.name}** に参加しました！`, ephemeral: true });
+      } catch (error) {
+        console.error('VC参加エラー:', error);
+        await interaction.reply({ content: '❌ ボイスチャンネルへの参加に失敗しました。', ephemeral: true });
+      }
+    }
+
+    // VCから退出する機能
+    else if (commandName === 'leave') {
+      const connection = getVoiceConnection(guild.id);
+
+      if (!connection) {
+        return interaction.reply({ content: '❌ ボットは現在どのボイスチャンネルにも参加していません。', ephemeral: true });
+      }
+
+      try {
+        connection.destroy();
+        await interaction.reply({ content: '👋 ボイスチャンネルから退出しました。', ephemeral: true });
+      } catch (error) {
+        console.error('VC退出エラー:', error);
+        await interaction.reply({ content: '❌ 退出処理中にエラーが発生しました。', ephemeral: true });
+      }
     }
   }
 
