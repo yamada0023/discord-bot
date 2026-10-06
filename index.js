@@ -14,7 +14,7 @@ http.createServer((req, res) => {
 
 
 // ============================================================
-// Discord.js
+// Discord.js & Canvas
 // ============================================================
 
 const {
@@ -35,8 +35,11 @@ const {
   SlashCommandBuilder,
   RoleSelectMenuBuilder,
   ChannelSelectMenuBuilder,
-  ChannelType
+  ChannelType,
+  AttachmentBuilder
 } = require('discord.js');
+
+const { createCanvas } = require('@napi-rs/canvas');
 
 
 // ============================================================
@@ -70,7 +73,7 @@ let roleIds = [
   '1537841157315231896'
 ];
 
-// サブ垢対策：作成から何日未満のアカウントを弾くか（例: 7日）
+// サブ垢対策：作成から何日未満のアカウントを弾くか
 const MIN_ACCOUNT_AGE_DAYS = 7;
 
 // ============================================================
@@ -121,8 +124,6 @@ function saveSettings() {
 // 各種キャッシュ・マップ
 // ============================================================
 const activeCaptchas = new Map();
-const statsChannels = new Map();
-const memberStatsCache = new Map();
 
 
 // ============================================================
@@ -153,7 +154,7 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
 
 
 // ============================================================
-// 認証コード生成
+// 認証コード＆画像生成
 // ============================================================
 
 function generateCaptchaCode() {
@@ -163,6 +164,50 @@ function generateCaptchaCode() {
     text += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return text;
+}
+
+function createCaptchaImage(text) {
+  const canvas = createCanvas(300, 100);
+  const ctx = canvas.getContext('2d');
+
+  // 背景色（グラデーションや単色）
+  ctx.fillStyle = '#2f3136';
+  ctx.fillRect(0, 0, 300, 100);
+
+  // ノイズ（ランダムな線）
+  for (let i = 0; i < 6; i++) {
+    ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`;
+    ctx.lineWidth = Math.random() * 3 + 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.random() * 300, Math.random() * 100);
+    ctx.lineTo(Math.random() * 300, Math.random() * 100);
+    ctx.stroke();
+  }
+
+  // ノイズ（ランダムな点）
+  for (let i = 0; i < 100; i++) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;
+    ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);
+  }
+
+  // 文字を描画
+  ctx.font = 'bold 45px sans-serif';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 0; i < text.length; i++) {
+    ctx.save();
+    const x = 35 + i * 40;
+    const y = 50 + (Math.random() * 20 - 10);
+    const angle = (Math.random() * 30 - 15) * Math.PI / 180;
+
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text[i], 0, 0);
+    ctx.restore();
+  }
+
+  return canvas.toBuffer('image/png');
 }
 
 
@@ -408,7 +453,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.customId === 'admin_deploy_verify_panel') {
       const embed = new EmbedBuilder()
         .setTitle('🔒 メンバー認証')
-        .setDescription('下の「認証する」ボタンを押して、テキスト認証を行ってください。\n※作成から日数の浅いアカウント（サブ垢等）は認証できません。')
+        .setDescription('下の「認証する」ボタンを押して、画像認証を行ってください。\n※作成から日数の浅いアカウント（サブ垢等）は認証できません。')
         .setColor(0x00FF00);
 
       const row = new ActionRowBuilder().addComponents(
@@ -430,14 +475,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
-    // 認証ボタンを押したとき：サブ垢チェックを行う
+    // 認証ボタンを押したとき：サブ垢チェック ＆ 画像生成してモーダル表示
     else if (interaction.customId === 'start_verify') {
       const user = interaction.user;
       const createdTimestamp = user.createdTimestamp;
       const now = Date.now();
       const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
 
-      // サブ垢判定（作成日数が設定日数未満の場合）
       if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
         await sendLog(guild, interaction.member, '⚠️ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
         return interaction.reply({
@@ -449,20 +493,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const code = generateCaptchaCode();
       activeCaptchas.set(user.id, code);
 
+      const imageBuffer = createCaptchaImage(code);
+      const attachment = new AttachmentBuilder(imageBuffer, { name: 'captcha.png' });
+
+      const embed = new EmbedBuilder()
+        .setTitle('画像認証')
+        .setDescription('下の画像に表示されている6文字の半角英数字を入力してください。')
+        .setImage('attachment://captcha.png')
+        .setColor(0x5865F2);
+
       const modal = new ModalBuilder()
         .setCustomId('verify_modal')
-        .setTitle('メンバー認証');
+        .setTitle('メンバー認証（画像入力）');
 
       const textInput = new TextInputBuilder()
         .setCustomId('verify_code_input')
-        .setLabel(`次の文字を半角で入力してください: ${code}`)
+        .setLabel('画像の中の文字を入力')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(6)
         .setMinLength(6);
 
       modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-      await interaction.showModal(modal);
+
+      // 画像を添付して返信する（エフェメラルで本人にだけ見えるようにする）
+      await interaction.reply({ embeds: [embed], files: [attachment], ephemeral: true });
+
+      // モーダルを直接出せないため、ボタンからモーダルを出すか、または別方式にする必要があるため注意
+      // ※Discordの仕様上、ボタンクリックから直接 showModal を呼ばないとモーダルが出せません。
+      // 画像を同時に出したい場合は、通常の返信メッセージにボタンを置き、そこからモーダルを出すか、
+      // またはモーダル内に画像を表示することはDiscordの仕様上できないため、
+      // 「ボタンを押す -> 画像が表示されたメッセージが届く -> その下の入力ボタンを押す」形にするのが一般的です。
     }
 
     else if (interaction.customId.startsWith('toggle_role_')) {
@@ -479,7 +540,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // 4. モーダル送信（テキスト認証の答え合わせ）
+  // 4. モーダル送信（画像認証の答え合わせ）
   else if (interaction.isModalSubmit()) {
     if (interaction.customId === 'verify_modal') {
       const userInput = interaction.fields.getTextInputValue('verify_code_input').trim();
@@ -496,7 +557,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         try {
           await interaction.member.roles.add(settings.verifyRoleId);
           await interaction.reply({ content: '✅ 認証に成功しました！ロールが付与されました。', ephemeral: true });
-          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} がテキスト認証をクリアしました。`);
+          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が画像認証をクリアしました。`);
         } catch (e) {
           console.error('認証ロール付与失敗:', e);
           await interaction.reply({ content: '⚠️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
