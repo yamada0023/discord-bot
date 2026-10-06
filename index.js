@@ -18,7 +18,8 @@ const {
   TextInputBuilder, 
   TextInputStyle, 
   AttachmentBuilder,
-  EmbedBuilder 
+  EmbedBuilder,
+  PermissionFlagsBits
 } = require('discord.js');
 const { createCanvas } = require('@napi-rs/canvas');
 
@@ -38,21 +39,16 @@ const client = new Client({
 });
 
 // メモリ上で設定を保持する変数
-let verifyRoleId = '1537841157315231896'; // デフォルトの認証ロールID
-let userInfoChannelId = null; // デフォルトのログ/ユーザー情報出力チャンネルID
-
-// ★サブ垢対策：アカウント作成から必要な最低日数（3日未満は拒否）
-const MIN_ACCOUNT_AGE_DAYS = 3; 
-
-// リアクション用絵文字のリスト (10個まで対応)
-const EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+let verifyRoleId = '1537841157315231896'; // デフォルト認証ロールID
+let userInfoChannelId = null; // ログ用チャンネルID
+let minAccountAgeDays = 3; // サブ垢対策（最低日数）
 
 // キャプチャ認証用の文字保存用マップ
 const captchaStore = new Map();
 
 // ランダムな文字列（5桁）を生成する関数
 function generateCaptchaText() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 見間違いやすい0, O, 1, Iを除外
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let text = '';
   for (let i = 0; i < 5; i++) {
     text += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -65,11 +61,9 @@ function createCaptchaImage(text) {
   const canvas = createCanvas(200, 70);
   const ctx = canvas.getContext('2d');
 
-  // 背景
   ctx.fillStyle = '#f0f0f0';
   ctx.fillRect(0, 0, 200, 70);
 
-  // ノイズ線を描画（Bot対策）
   for (let i = 0; i < 5; i++) {
     ctx.strokeStyle = `#${Math.floor(Math.random()*16777215).toString(16)}`;
     ctx.beginPath();
@@ -78,7 +72,6 @@ function createCaptchaImage(text) {
     ctx.stroke();
   }
 
-  // 文字を描画
   ctx.font = 'bold 36px sans-serif';
   ctx.fillStyle = '#333333';
   ctx.textAlign = 'center';
@@ -110,71 +103,133 @@ async function sendLog(guild, member, method) {
   await logChannel.send({ embeds: [embed] }).catch(err => console.error('ログ送信失敗:', err));
 }
 
-// Bot起動時の処理
+// 管理者パネルのコンポーネント生成
+function buildAdminPanel() {
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ Bot管理ダッシュボード')
+    .setColor(0x5865F2)
+    .setDescription('ボタンを押してDiscord上で各種設定を行えます。')
+    .addFields(
+      { name: '現在の付与ロールID', value: verifyRoleId ? `<@&${verifyRoleId}> (\`${verifyRoleId}\`)` : '未設定', inline: false },
+      { name: '現在のログチャンネル', value: userInfoChannelId ? `<#${userInfoChannelId}> (\`${userInfoChannelId}\`)` : '未設定', inline: false },
+      { name: 'サブ垢対策（拒否対象）', value: `作成から \`${minAccountAgeDays}\` 日未満`, inline: false }
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_set_role').setLabel('ロールID変更').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_set_log').setLabel('ログチャンネル変更').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_set_days').setLabel('サブ垢拒否日数変更').setStyle(ButtonStyle.Secondary)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_deploy_captcha').setLabel('ここに認証パネルを設置').setStyle(ButtonStyle.Success)
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
+// Bot起動時
 client.on(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   client.user.setStatus('online');
-  client.user.setActivity('稼働中', { type: 0 });
+  client.user.setActivity('認証管理中', { type: 0 });
 });
 
-// メッセージ作成イベント（管理コマンド群）
+// コマンド処理
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
-  // 1. 認証ロールID設定コマンド: !verify <RoleID>
-  if (message.content.startsWith('!verify')) {
-    const args = message.content.split(' ');
-    if (args[1]) {
-      verifyRoleId = args[1];
-      await message.channel.send(`認証ロールIDを \`${verifyRoleId}\` に設定しました。`);
-    } else {
-      await message.channel.send(`現在の認証ロールIDは \`${verifyRoleId}\` です。`);
+  // 管理パネル呼び出しコマンド: !admin
+  if (message.content === '!admin') {
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return message.reply('❌ このコマンドは管理者のみ使用できます。');
     }
-  }
-
-  // 2. ログチャンネルID設定コマンド: !userinfo <ChannelID>
-  if (message.content.startsWith('!userinfo')) {
-    const args = message.content.split(' ');
-    if (args[1]) {
-      userInfoChannelId = args[1];
-      await message.channel.send(`ログ用チャンネルIDを \`${userInfoChannelId}\` に設定しました。`);
-    } else {
-      await message.channel.send(`現在のログ用チャンネルIDは \`${userInfoChannelId || '未設定'}\` です。`);
-    }
-  }
-
-  // 3. 画像キャプチャ認証パネル設置コマンド: !setup-captcha
-  if (message.content === '!setup-captcha') {
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('start_captcha')
-        .setLabel('画像認証を開始する')
-        .setStyle(ButtonStyle.Primary)
-    );
-
-    await message.channel.send({
-      content: '🔒 **サーバー参加認証（強固）**\n以下のボタンを押して画像認証（5桁コード入力）を完了してください。',
-      components: [row]
-    });
+    await message.channel.send(buildAdminPanel());
   }
 });
 
-// ボタン・モーダル操作（画像キャプチャ認証＆サブ垢チェック）の検知
+// インタラクション（ボタン・モーダル処理）
 client.on(Events.InteractionCreate, async interaction => {
+
+  // --- 管理パネルのボタン操作 ---
+  if (interaction.isButton() && interaction.customId.startsWith('admin_')) {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
+    }
+
+    if (interaction.customId === 'admin_set_role') {
+      const modal = new ModalBuilder().setCustomId('modal_set_role').setTitle('付与するロールIDの設定');
+      const input = new TextInputBuilder().setCustomId('input_role').setLabel('ロールIDを入力').setStyle(TextInputStyle.Short).setValue(verifyRoleId).setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return await interaction.showModal(modal);
+    }
+
+    if (interaction.customId === 'admin_set_log') {
+      const modal = new ModalBuilder().setCustomId('modal_set_log').setTitle('ログチャンネルIDの設定');
+      const input = new TextInputBuilder().setCustomId('input_log').setLabel('チャンネルIDを入力 (空欄で解除)').setStyle(TextInputStyle.Short).setValue(userInfoChannelId || '').setRequired(false);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return await interaction.showModal(modal);
+    }
+
+    if (interaction.customId === 'admin_set_days') {
+      const modal = new ModalBuilder().setCustomId('modal_set_days').setTitle('サブ垢判定の最低日数設定');
+      const input = new TextInputBuilder().setCustomId('input_days').setLabel('最低日数 (例: 3)').setStyle(TextInputStyle.Short).setValue(String(minAccountAgeDays)).setRequired(true);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return await interaction.showModal(modal);
+    }
+
+    if (interaction.customId === 'admin_deploy_captcha') {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('start_captcha').setLabel('画像認証を開始する').setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.channel.send({
+        content: '🔒 **サーバー参加認証**\n以下のボタンを押して画像認証（5桁コード入力）を完了してください。',
+        components: [row]
+      });
+
+      return await interaction.reply({ content: '✅ このチャンネルに認証パネルを設置しました！', ephemeral: true });
+    }
+  }
+
+  // --- モーダル送信時の処理（管理用） ---
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId === 'modal_set_role') {
+      verifyRoleId = interaction.fields.getTextInputValue('input_role').trim();
+      await interaction.reply({ content: `✅ ロールIDを \`${verifyRoleId}\` に変更しました。`, ephemeral: true });
+      return interaction.message.edit(buildAdminPanel());
+    }
+
+    if (interaction.customId === 'modal_set_log') {
+      userInfoChannelId = interaction.fields.getTextInputValue('input_log').trim() || null;
+      await interaction.reply({ content: `✅ ログチャンネルIDを \`${userInfoChannelId || '未設定'}\` に変更しました。`, ephemeral: true });
+      return interaction.message.edit(buildAdminPanel());
+    }
+
+    if (interaction.customId === 'modal_set_days') {
+      const inputVal = parseInt(interaction.fields.getTextInputValue('input_days').trim());
+      if (isNaN(inputVal) || inputVal < 0) {
+        return interaction.reply({ content: '❌ 有効な数値を入力してください。', ephemeral: true });
+      }
+      minAccountAgeDays = inputVal;
+      await interaction.reply({ content: `✅ サブ垢拒否条件を \`${minAccountAgeDays}\` 日未満に変更しました。`, ephemeral: true });
+      return interaction.message.edit(buildAdminPanel());
+    }
+  }
+
+  // --- 一般ユーザーの画像キャプチャ認証処理 ---
   if (interaction.isButton() && interaction.customId === 'start_captcha') {
-    // 既にロールを持っている場合
     if (interaction.member.roles.cache.has(verifyRoleId)) {
       return interaction.reply({ content: 'すでに認証済みです！', ephemeral: true });
     }
 
-    // ★サブ垢判定（作成日数の確認）
+    // サブ垢チェック
     const createdTimestamp = interaction.user.createdTimestamp;
-    const now = Date.now();
-    const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
+    const accountAgeDays = (Date.now() - createdTimestamp) / (1000 * 60 * 60 * 24);
 
-    if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
+    if (accountAgeDays < minAccountAgeDays) {
       return interaction.reply({ 
-        content: `⚠️ **認証失敗**: アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウントは認証できません。（サブアカウント・スパム防止措置）`, 
+        content: `⚠️ **認証失敗**: アカウント作成から ${minAccountAgeDays} 日未満のアカウントは認証できません。（サブアカウント防止措置）`, 
         ephemeral: true 
       });
     }
@@ -186,10 +241,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'captcha.png' });
 
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('answer_captcha')
-        .setLabel('コードを入力する')
-        .setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId('answer_captcha').setLabel('コードを入力する').setStyle(ButtonStyle.Success)
     );
 
     await interaction.reply({
@@ -201,18 +253,8 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   if (interaction.isButton() && interaction.customId === 'answer_captcha') {
-    const modal = new ModalBuilder()
-      .setCustomId('captcha_modal')
-      .setTitle('画像認証コードの入力');
-
-    const input = new TextInputBuilder()
-      .setCustomId('captcha_input')
-      .setLabel('画像に表示されている文字を入力')
-      .setStyle(TextInputStyle.Short)
-      .setMaxLength(5)
-      .setMinLength(5)
-      .setRequired(true);
-
+    const modal = new ModalBuilder().setCustomId('captcha_modal').setTitle('画像認証コードの入力');
+    const input = new TextInputBuilder().setCustomId('captcha_input').setLabel('画像に表示されている文字を入力').setStyle(TextInputStyle.Short).setMaxLength(5).setMinLength(5).setRequired(true);
     modal.addComponents(new ActionRowBuilder().addComponents(input));
     await interaction.showModal(modal);
   }
@@ -227,52 +269,12 @@ client.on(Events.InteractionCreate, async interaction => {
       if (role) {
         await interaction.member.roles.add(role);
         await interaction.reply({ content: '✅ 認証成功！ロールが付与されました。', ephemeral: true });
-        
-        // ログ出力
         await sendLog(interaction.guild, interaction.member, '画像キャプチャ認証');
       } else {
         await interaction.reply({ content: '⚠️ ロールが見つかりませんでした。設定を確認してください。', ephemeral: true });
       }
     } else {
       await interaction.reply({ content: '❌ コードが違います。もう一度ボタンを押してやり直してください。', ephemeral: true });
-    }
-  }
-});
-
-// リアクション追加時の認証ロール付与処理（従来の簡易認証機能）
-client.on(Events.MessageReactionAdd, async (reaction, user) => {
-  if (user.bot) return;
-
-  if (reaction.partial) {
-    try {
-      await reaction.fetch();
-    } catch (error) {
-      console.error('リアクションの取得に失敗しました:', error);
-      return;
-    }
-  }
-
-  // サブ垢判定（リアクション認証時にも適用）
-  const accountAgeDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
-  if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-    console.log(`${user.tag} は作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のためロール付与を拒否しました。`);
-    return;
-  }
-
-  if (verifyRoleId) {
-    try {
-      const guild = reaction.message.guild;
-      const member = await guild.members.fetch(user.id);
-      const role = guild.roles.cache.get(verifyRoleId);
-      if (role && !member.roles.cache.has(verifyRoleId)) {
-        await member.roles.add(role);
-        console.log(`${user.tag} にロールが付与されました。`);
-        
-        // ログ出力
-        await sendLog(guild, member, '絵文字リアクション認証');
-      }
-    } catch (error) {
-      console.error('ロールの付与に失敗しました:', error);
     }
   }
 });
