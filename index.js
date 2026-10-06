@@ -1,7 +1,7 @@
 const http = require('http');
 
 // ============================================================
-// Webサーバーの起動
+// Webサーバー
 // Render等の常時起動・Keep-Alive用
 // ============================================================
 
@@ -20,19 +20,26 @@ const {
   GatewayIntentBits,
   Partials,
   Events,
+
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+
   EmbedBuilder,
+
   PermissionFlagsBits,
+
   REST,
   Routes,
   SlashCommandBuilder,
+
   RoleSelectMenuBuilder,
   ChannelSelectMenuBuilder,
+
   ChannelType
 } = require('discord.js');
 
@@ -45,9 +52,10 @@ const client = new Client({
 
   intents: [
 
+    // サーバー
     GatewayIntentBits.Guilds,
 
-    // メンバー情報取得
+    // メンバー情報
     GatewayIntentBits.GuildMembers,
 
     // メッセージ
@@ -56,40 +64,43 @@ const client = new Client({
     // リアクション
     GatewayIntentBits.GuildMessageReactions,
 
-    // Message Content
+    // メッセージ内容
     GatewayIntentBits.MessageContent,
 
-    // VC参加・退出・移動を検知
+    // VC
     GatewayIntentBits.GuildVoiceStates
 
   ],
 
   partials: [
+
     Partials.Message,
     Partials.Channel,
     Partials.Reaction
+
   ]
 
 });
 
 
 // ============================================================
-// 設定データ保持用変数
+// 設定
 // ============================================================
 
+// 認証ロール
 let verifyRoleId = '1537841157315231896';
 
 // 認証ログチャンネル
 let userInfoChannelId = null;
 
-// ロールパネル用ロールID
+// ロールパネル
 let roleIds = [
   '1537841157315231896'
 ];
 
 
 // ============================================================
-// 認証コード保持
+// 認証コード
 // ============================================================
 
 const activeCaptchas = new Map();
@@ -99,27 +110,46 @@ const activeCaptchas = new Map();
 // 統計VC
 // ============================================================
 
-// サーバーごとの統計VC ID
-//
-// guild.id = {
-//   total: 'チャンネルID',
-//   human: 'チャンネルID',
-//   bot: 'チャンネルID',
-//   voice: 'チャンネルID'
-// }
+/*
+guild.id = {
+
+  total: 'VCチャンネルID',
+
+  human: 'VCチャンネルID',
+
+  bot: 'VCチャンネルID',
+
+  voice: 'VCチャンネルID'
+
+}
+*/
+
 const statsChannels = new Map();
 
 
-// メンバー統計のキャッシュ
+// ============================================================
+// メンバー統計キャッシュ
+// ============================================================
+
 const memberStatsCache = new Map();
 
 
+// ============================================================
 // 統計更新タイマー
+// ============================================================
+
 const statsUpdateTimers = new Map();
 
 
 // ============================================================
-// ログ送信関数
+// メンバー再取得タイマー
+// ============================================================
+
+const memberRefreshTimers = new Map();
+
+
+// ============================================================
+// 認証ログ
 // ============================================================
 
 async function sendLog(
@@ -162,14 +192,15 @@ async function sendLog(
       embeds: [embed]
     });
 
-  } catch (err) {
+  } catch (error) {
 
     console.error(
       'ログ送信失敗:',
-      err
+      error
     );
 
   }
+
 }
 
 
@@ -195,11 +226,12 @@ function generateCaptchaCode() {
   }
 
   return text;
+
 }
 
 
 // ============================================================
-// ロール選択パネル
+// ロールパネル生成
 // ============================================================
 
 function buildRolePanelComponents(guild) {
@@ -209,21 +241,21 @@ function buildRolePanelComponents(guild) {
   let currentRow =
     new ActionRowBuilder();
 
-  for (const rId of roleIds) {
+  for (const roleId of roleIds) {
 
     const role =
-      guild.roles.cache.get(rId);
+      guild.roles.cache.get(roleId);
 
     const labelName =
       role
         ? role.name
-        : `未設定 (${rId})`;
+        : `未設定 (${roleId})`;
 
     const button =
       new ButtonBuilder()
 
         .setCustomId(
-          `toggle_role_${rId}`
+          `toggle_role_${roleId}`
         )
 
         .setLabel(
@@ -236,10 +268,9 @@ function buildRolePanelComponents(guild) {
 
     currentRow.addComponents(button);
 
-
-    // 1行最大5個
+    // 1行5個まで
     if (
-      currentRow.components.length === 5
+      currentRow.components.length >= 5
     ) {
 
       rows.push(currentRow);
@@ -251,7 +282,6 @@ function buildRolePanelComponents(guild) {
 
   }
 
-
   if (
     currentRow.components.length > 0
   ) {
@@ -260,8 +290,8 @@ function buildRolePanelComponents(guild) {
 
   }
 
-
   return rows;
+
 }
 
 
@@ -375,9 +405,13 @@ function buildVerifyAdminPanel() {
     embeds: [embed],
 
     components: [
+
       roleSelectRow,
+
       channelSelectRow,
+
       buttonRow
+
     ]
 
   };
@@ -392,9 +426,15 @@ function buildVerifyAdminPanel() {
 function buildRoleAdminPanel() {
 
   const roleDisplay =
-    roleIds
-      .map(id => `<@&${id}>`)
-      .join('\n') || '未設定';
+    roleIds.length > 0
+
+      ? roleIds
+          .map(
+            id => `<@&${id}>`
+          )
+          .join('\n')
+
+      : '未設定';
 
 
   const embed =
@@ -428,7 +468,7 @@ function buildRoleAdminPanel() {
           )
 
           .setPlaceholder(
-            'パネルに表示するロールを選択 (複数可)'
+            'パネルに表示するロールを選択'
           )
 
           .setMinValues(1)
@@ -464,8 +504,11 @@ function buildRoleAdminPanel() {
     embeds: [embed],
 
     components: [
+
       roleSelectRow,
+
       buttonRow
+
     ]
 
   };
@@ -482,25 +525,34 @@ async function refreshMemberStats(guild) {
   try {
 
     console.log(
-      `[統計] ${guild.name} のメンバー情報を取得中...`
+      `[統計取得] ${guild.name} のメンバー情報を取得中...`
     );
 
 
-    // Discordからメンバー情報を取得
+    // --------------------------------------------------------
+    // Discordからメンバーを取得
+    // --------------------------------------------------------
+
     const members =
       await guild.members.fetch();
 
 
-    let botCount = 0;
-
     let humanCount = 0;
 
+    let botCount = 0;
+
+
+    // --------------------------------------------------------
+    // 人間 / Botを分類
+    // --------------------------------------------------------
 
     for (
       const member of members.values()
     ) {
 
-      if (member.user.bot) {
+      if (
+        member.user.bot
+      ) {
 
         botCount++;
 
@@ -513,10 +565,50 @@ async function refreshMemberStats(guild) {
     }
 
 
-    // Discord側が持っている正式な総メンバー数
-    const totalMembers =
-      guild.memberCount;
+    // --------------------------------------------------------
+    // fetchできたメンバー数を総数として使用
+    // --------------------------------------------------------
 
+    const fetchedTotal =
+      members.size;
+
+
+    // --------------------------------------------------------
+    // guild.memberCountとも比較
+    // --------------------------------------------------------
+
+    const officialTotal =
+      guild.memberCount || 0;
+
+
+    let totalMembers =
+      fetchedTotal;
+
+
+    /*
+      DiscordのmemberCountと取得数が一致しない場合、
+      guild.memberCountを参考値として使用。
+
+      通常はfetch結果と一致します。
+    */
+
+    if (
+      officialTotal > totalMembers
+    ) {
+
+      console.warn(
+        `[統計警告] ${guild.name} | fetch=${fetchedTotal} | Discord=${officialTotal}`
+      );
+
+      totalMembers =
+        officialTotal;
+
+    }
+
+
+    // --------------------------------------------------------
+    // キャッシュ
+    // --------------------------------------------------------
 
     const result = {
 
@@ -529,7 +621,6 @@ async function refreshMemberStats(guild) {
     };
 
 
-    // キャッシュ
     memberStatsCache.set(
       guild.id,
       result
@@ -537,7 +628,15 @@ async function refreshMemberStats(guild) {
 
 
     console.log(
-      `[統計] ${guild.name} | 総:${totalMembers} | 人間:${humanCount} | Bot:${botCount}`
+
+      `[統計] ${guild.name}` +
+
+      ` | 総:${totalMembers}` +
+
+      ` | 人間:${humanCount}` +
+
+      ` | Bot:${botCount}`
+
     );
 
 
@@ -552,9 +651,14 @@ async function refreshMemberStats(guild) {
     );
 
 
-    // 前回のデータがあれば使用
+    // --------------------------------------------------------
+    // 前回キャッシュ
+    // --------------------------------------------------------
+
     if (
-      memberStatsCache.has(guild.id)
+      memberStatsCache.has(
+        guild.id
+      )
     ) {
 
       return memberStatsCache.get(
@@ -564,7 +668,10 @@ async function refreshMemberStats(guild) {
     }
 
 
-    // 最低限 guild.memberCount を返す
+    // --------------------------------------------------------
+    // 最低限の値
+    // --------------------------------------------------------
+
     return {
 
       totalMembers:
@@ -582,7 +689,7 @@ async function refreshMemberStats(guild) {
 
 
 // ============================================================
-// VC参加人数取得
+// VC参加人数
 // ============================================================
 
 function getVoiceCount(guild) {
@@ -590,7 +697,6 @@ function getVoiceCount(guild) {
   let count = 0;
 
 
-  // VoiceStateから取得
   for (
     const voiceState
       of guild.voiceStates.cache.values()
@@ -613,7 +719,7 @@ function getVoiceCount(guild) {
 
 
 // ============================================================
-// サーバー統計取得
+// サーバー統計
 // ============================================================
 
 async function getServerStats(guild) {
@@ -624,7 +730,6 @@ async function getServerStats(guild) {
     );
 
 
-  // 初回なら取得
   if (!memberStats) {
 
     memberStats =
@@ -670,7 +775,6 @@ async function createStatsChannels(guild) {
     );
 
 
-    // 最新の人数を取得
     const stats =
       await getServerStats(
         guild
@@ -678,56 +782,67 @@ async function createStatsChannels(guild) {
 
 
     // ========================================================
-    // 既存VCを検索
+    // 既存VC検索
     // ========================================================
 
     const existingChannels =
       guild.channels.cache.filter(
         channel =>
+
           channel.type ===
             ChannelType.GuildVoice &&
+
           channel.name.startsWith('📊')
+
       );
 
 
     let totalChannel =
       existingChannels.find(
         channel =>
+
           channel.name.startsWith(
             '📊 総メンバー数'
           )
+
       );
 
 
     let humanChannel =
       existingChannels.find(
         channel =>
+
           channel.name.startsWith(
             '📊 人間'
           )
+
       );
 
 
     let botChannel =
       existingChannels.find(
         channel =>
+
           channel.name.startsWith(
             '📊 Bot'
           )
+
       );
 
 
     let voiceChannel =
       existingChannels.find(
         channel =>
+
           channel.name.startsWith(
             '📊 VC参加中'
           )
+
       );
 
 
     // ========================================================
-    // 総メンバー数VC
+    // 総メンバーVC
     // ========================================================
 
     if (!totalChannel) {
@@ -749,7 +864,9 @@ async function createStatsChannels(guild) {
                 guild.roles.everyone.id,
 
               deny: [
+
                 PermissionFlagsBits.Connect
+
               ]
 
             }
@@ -757,11 +874,6 @@ async function createStatsChannels(guild) {
           ]
 
         });
-
-
-      console.log(
-        '[統計VC] 総メンバー数VCを作成'
-      );
 
     }
 
@@ -789,7 +901,9 @@ async function createStatsChannels(guild) {
                 guild.roles.everyone.id,
 
               deny: [
+
                 PermissionFlagsBits.Connect
+
               ]
 
             }
@@ -797,11 +911,6 @@ async function createStatsChannels(guild) {
           ]
 
         });
-
-
-      console.log(
-        '[統計VC] 人間VCを作成'
-      );
 
     }
 
@@ -829,7 +938,9 @@ async function createStatsChannels(guild) {
                 guild.roles.everyone.id,
 
               deny: [
+
                 PermissionFlagsBits.Connect
+
               ]
 
             }
@@ -838,16 +949,11 @@ async function createStatsChannels(guild) {
 
         });
 
-
-      console.log(
-        '[統計VC] Bot VCを作成'
-      );
-
     }
 
 
     // ========================================================
-    // VC参加人数
+    // VC参加中
     // ========================================================
 
     if (!voiceChannel) {
@@ -869,7 +975,9 @@ async function createStatsChannels(guild) {
                 guild.roles.everyone.id,
 
               deny: [
+
                 PermissionFlagsBits.Connect
+
               ]
 
             }
@@ -877,11 +985,6 @@ async function createStatsChannels(guild) {
           ]
 
         });
-
-
-      console.log(
-        '[統計VC] VC参加中VCを作成'
-      );
 
     }
 
@@ -914,7 +1017,7 @@ async function createStatsChannels(guild) {
 
 
     // ========================================================
-    // 作成直後に更新
+    // 即時更新
     // ========================================================
 
     await updateStatsChannels(
@@ -945,7 +1048,10 @@ async function updateStatsChannels(guild) {
     if (!guild) return;
 
 
+    // ========================================================
     // 最新統計
+    // ========================================================
+
     const stats =
       await getServerStats(
         guild
@@ -970,53 +1076,71 @@ async function updateStatsChannels(guild) {
 
       const totalChannel =
         channels.find(
+
           channel =>
+
             channel.type ===
               ChannelType.GuildVoice &&
+
             channel.name.startsWith(
               '📊 総メンバー数'
             )
+
         );
 
 
       const humanChannel =
         channels.find(
+
           channel =>
+
             channel.type ===
               ChannelType.GuildVoice &&
+
             channel.name.startsWith(
               '📊 人間'
             )
+
         );
 
 
       const botChannel =
         channels.find(
+
           channel =>
+
             channel.type ===
               ChannelType.GuildVoice &&
+
             channel.name.startsWith(
               '📊 Bot'
             )
+
         );
 
 
       const voiceChannel =
         channels.find(
+
           channel =>
+
             channel.type ===
               ChannelType.GuildVoice &&
+
             channel.name.startsWith(
               '📊 VC参加中'
             )
+
         );
 
 
       if (
+
         totalChannel &&
         humanChannel &&
         botChannel &&
         voiceChannel
+
       ) {
 
         channelIds = {
@@ -1043,7 +1167,6 @@ async function updateStatsChannels(guild) {
 
       } else {
 
-        // 足りないVCがあれば作成
         return createStatsChannels(
           guild
         );
@@ -1082,17 +1205,22 @@ async function updateStatsChannels(guild) {
 
 
     // ========================================================
-    // 総メンバー数
+    // 総メンバー
     // ========================================================
 
     if (
+
       totalChannel &&
+
       totalChannel.name !==
         `📊 総メンバー数: ${stats.totalMembers}`
+
     ) {
 
       await totalChannel.setName(
+
         `📊 総メンバー数: ${stats.totalMembers}`
+
       );
 
     }
@@ -1103,13 +1231,18 @@ async function updateStatsChannels(guild) {
     // ========================================================
 
     if (
+
       humanChannel &&
+
       humanChannel.name !==
         `📊 人間: ${stats.humanCount}`
+
     ) {
 
       await humanChannel.setName(
+
         `📊 人間: ${stats.humanCount}`
+
       );
 
     }
@@ -1120,30 +1253,40 @@ async function updateStatsChannels(guild) {
     // ========================================================
 
     if (
+
       botChannel &&
+
       botChannel.name !==
         `📊 Bot: ${stats.botCount}`
+
     ) {
 
       await botChannel.setName(
+
         `📊 Bot: ${stats.botCount}`
+
       );
 
     }
 
 
     // ========================================================
-    // VC
+    // VC参加中
     // ========================================================
 
     if (
+
       voiceChannel &&
+
       voiceChannel.name !==
         `📊 VC参加中: ${stats.voiceCount}`
+
     ) {
 
       await voiceChannel.setName(
+
         `📊 VC参加中: ${stats.voiceCount}`
+
       );
 
     }
@@ -1152,9 +1295,13 @@ async function updateStatsChannels(guild) {
     console.log(
 
       `[統計更新] ${guild.name}` +
+
       ` | 総:${stats.totalMembers}` +
+
       ` | 人間:${stats.humanCount}` +
+
       ` | Bot:${stats.botCount}` +
+
       ` | VC:${stats.voiceCount}`
 
     );
@@ -1173,7 +1320,7 @@ async function updateStatsChannels(guild) {
 
 
 // ============================================================
-// 統計更新を遅延実行
+// 統計更新予約
 // ============================================================
 
 function scheduleStatsUpdate(guild) {
@@ -1181,7 +1328,6 @@ function scheduleStatsUpdate(guild) {
   if (!guild) return;
 
 
-  // 既にタイマーがあれば削除
   if (
     statsUpdateTimers.has(
       guild.id
@@ -1197,9 +1343,9 @@ function scheduleStatsUpdate(guild) {
   }
 
 
-  // 1秒後に更新
   const timer =
     setTimeout(
+
       async () => {
 
         statsUpdateTimers.delete(
@@ -1227,15 +1373,82 @@ function scheduleStatsUpdate(guild) {
 
 
 // ============================================================
-// Bot Ready
+// メンバー情報更新予約
+// ============================================================
+
+function scheduleMemberRefresh(guild) {
+
+  if (!guild) return;
+
+
+  if (
+    memberRefreshTimers.has(
+      guild.id
+    )
+  ) {
+
+    clearTimeout(
+      memberRefreshTimers.get(
+        guild.id
+      )
+    );
+
+  }
+
+
+  const timer =
+    setTimeout(
+
+      async () => {
+
+        memberRefreshTimers.delete(
+          guild.id
+        );
+
+
+        await refreshMemberStats(
+          guild
+        );
+
+
+        await updateStatsChannels(
+          guild
+        );
+
+      },
+
+      1500
+
+    );
+
+
+  memberRefreshTimers.set(
+    guild.id,
+    timer
+  );
+
+}
+
+
+// ============================================================
+// Ready
 // ============================================================
 
 client.once(
   Events.ClientReady,
+
   async () => {
 
     console.log(
-      `Logged in as ${client.user.tag}`
+      `========================================`
+    );
+
+    console.log(
+      `Bot Login: ${client.user.tag}`
+    );
+
+    console.log(
+      `========================================`
     );
 
 
@@ -1313,6 +1526,7 @@ client.once(
         )
 
         .addIntegerOption(
+
           option =>
 
             option
@@ -1336,6 +1550,7 @@ client.once(
               .setMaxValue(
                 100
               )
+
         )
 
     ].map(
@@ -1343,6 +1558,10 @@ client.once(
         command.toJSON()
     );
 
+
+    // ========================================================
+    // コマンド登録
+    // ========================================================
 
     const rest =
       new REST({
@@ -1368,7 +1587,7 @@ client.once(
 
 
       console.log(
-        'スラッシュコマンドの登録が完了しました！'
+        'スラッシュコマンド登録完了'
       );
 
 
@@ -1383,7 +1602,7 @@ client.once(
 
 
     // ========================================================
-    // 全サーバーの統計VC準備
+    // 全サーバー処理
     // ========================================================
 
     for (
@@ -1398,13 +1617,13 @@ client.once(
         );
 
 
-        // 最初にメンバー情報を取得
+        // メンバー統計取得
         await refreshMemberStats(
           guild
         );
 
 
-        // 統計VC作成
+        // 統計VC
         await createStatsChannels(
           guild
         );
@@ -1413,41 +1632,109 @@ client.once(
       } catch (error) {
 
         console.error(
+
           `[起動処理] ${guild.name} エラー:`,
+
           error
+
         );
 
       }
 
     }
 
+
+    // ========================================================
+    // 定期的な人数チェック
+    //
+    // 5分ごとにDiscordから再取得
+    // ========================================================
+
+    setInterval(
+
+      async () => {
+
+        console.log(
+          '[定期統計] メンバー数を再確認中...'
+        );
+
+
+        for (
+          const guild
+            of client.guilds.cache.values()
+        ) {
+
+          try {
+
+            await refreshMemberStats(
+              guild
+            );
+
+
+            await updateStatsChannels(
+              guild
+            );
+
+
+          } catch (error) {
+
+            console.error(
+              `[定期統計] ${guild.name}:`,
+              error
+            );
+
+          }
+
+        }
+
+      },
+
+      5 * 60 * 1000
+
+    );
+
   }
+
 );
 
 
 // ============================================================
-// 新しいサーバーに参加
+// サーバー参加
 // ============================================================
 
 client.on(
   Events.GuildCreate,
+
   async guild => {
 
     console.log(
-      `[GuildCreate] ${guild.name} に参加しました`
+      `[GuildCreate] ${guild.name} に参加`
     );
 
 
-    await refreshMemberStats(
-      guild
-    );
+    try {
+
+      await refreshMemberStats(
+        guild
+      );
 
 
-    await createStatsChannels(
-      guild
-    );
+      await createStatsChannels(
+        guild
+      );
+
+
+    } catch (error) {
+
+      console.error(
+        '[GuildCreate] エラー:',
+        error
+      );
+
+    }
 
   }
+
 );
 
 
@@ -1457,6 +1744,7 @@ client.on(
 
 client.on(
   Events.GuildMemberAdd,
+
   async member => {
 
     console.log(
@@ -1464,30 +1752,12 @@ client.on(
     );
 
 
-    try {
-
-      // メンバー情報を再取得
-      await refreshMemberStats(
-        member.guild
-      );
-
-
-      // 統計更新
-      scheduleStatsUpdate(
-        member.guild
-      );
-
-
-    } catch (error) {
-
-      console.error(
-        '[メンバー参加] 統計更新エラー:',
-        error
-      );
-
-    }
+    scheduleMemberRefresh(
+      member.guild
+    );
 
   }
+
 );
 
 
@@ -1497,37 +1767,25 @@ client.on(
 
 client.on(
   Events.GuildMemberRemove,
+
   async member => {
 
     console.log(
-      `[メンバー退出] ${member.user?.tag || member.id}`
+
+      `[メンバー退出] ${
+        member.user?.tag ||
+        member.id
+      }`
+
     );
 
 
-    try {
-
-      // メンバー数が変わったので再取得
-      await refreshMemberStats(
-        member.guild
-      );
-
-
-      // 統計更新
-      scheduleStatsUpdate(
-        member.guild
-      );
-
-
-    } catch (error) {
-
-      console.error(
-        '[メンバー退出] 統計更新エラー:',
-        error
-      );
-
-    }
+    scheduleMemberRefresh(
+      member.guild
+    );
 
   }
+
 );
 
 
@@ -1537,6 +1795,7 @@ client.on(
 
 client.on(
   Events.VoiceStateUpdate,
+
   (oldState, newState) => {
 
     const guild =
@@ -1552,12 +1811,12 @@ client.on(
     );
 
 
-    // VC人数を更新
     scheduleStatsUpdate(
       guild
     );
 
   }
+
 );
 
 
@@ -1567,6 +1826,7 @@ client.on(
 
 client.on(
   Events.InteractionCreate,
+
   async interaction => {
 
     try {
@@ -1622,7 +1882,7 @@ client.on(
               );
 
 
-            await interaction.reply({
+            return interaction.reply({
 
               content:
                 `🧹 **${deleted.size}** 件のメッセージを削除しました。`,
@@ -1640,19 +1900,16 @@ client.on(
             );
 
 
-            await interaction.reply({
+            return interaction.reply({
 
               content:
-                '❌ メッセージの削除に失敗しました。（14日以上経過したメッセージは一括削除できません）',
+                '❌ メッセージの削除に失敗しました。',
 
               ephemeral: true
 
             });
 
           }
-
-
-          return;
 
         }
 
@@ -1731,7 +1988,9 @@ client.on(
               '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
 
             components: [
+
               row
+
             ]
 
           });
@@ -1836,12 +2095,9 @@ client.on(
             interaction.values[0];
 
 
-          await interaction.update(
+          return interaction.update(
             buildVerifyAdminPanel()
           );
-
-
-          return;
 
         }
 
@@ -1856,12 +2112,9 @@ client.on(
             interaction.values;
 
 
-          await interaction.update(
+          return interaction.update(
             buildRoleAdminPanel()
           );
-
-
-          return;
 
         }
 
@@ -1904,12 +2157,9 @@ client.on(
             null;
 
 
-          await interaction.update(
+          return interaction.update(
             buildVerifyAdminPanel()
           );
-
-
-          return;
 
         }
 
@@ -1921,10 +2171,13 @@ client.on(
       // ======================================================
 
       if (
+
         interaction.isButton() &&
+
         interaction.customId.startsWith(
           'admin_'
         )
+
       ) {
 
         if (
@@ -1946,7 +2199,7 @@ client.on(
 
 
         // ====================================================
-        // 認証パネル設置
+        // 認証パネル
         // ====================================================
 
         if (
@@ -1981,7 +2234,9 @@ client.on(
               '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
 
             components: [
+
               row
+
             ]
 
           });
@@ -2000,7 +2255,7 @@ client.on(
 
 
         // ====================================================
-        // ロールパネル設置
+        // ロールパネル
         // ====================================================
 
         if (
@@ -2059,17 +2314,23 @@ client.on(
       // ======================================================
 
       if (
+
         interaction.isModalSubmit() &&
+
         interaction.customId ===
           'modal_submit_captcha'
+
       ) {
 
         const userAnswer =
           interaction.fields
+
             .getTextInputValue(
               'input_captcha_answer'
             )
+
             .trim()
+
             .toUpperCase();
 
 
@@ -2157,33 +2418,22 @@ client.on(
             );
 
 
-          } catch (err) {
+          } catch (error) {
 
             console.error(
               'ロール付与エラー:',
-              err
+              error
             );
 
 
             if (
-              err.code === 50013
+              error.code === 50013
             ) {
 
-              await interaction.reply({
+              return interaction.reply({
 
                 content:
-                  '❌ **ロールの付与に失敗しました（権限順位エラー）**\n\n【解決方法】\nDiscordの`サーバー設定` ＞ `ロール` で、**Botのロールを付与したいロールより「上」に移動**させてください！',
-
-                ephemeral: true
-
-              });
-
-            } else {
-
-              await interaction.reply({
-
-                content:
-                  '❌ ロールの付与に失敗しました。Botの権限を確認してください。',
+                  '❌ **ロールの付与に失敗しました（権限順位エラー）**\n\nDiscordの「サーバー設定」→「ロール」で、Botのロールを付与したいロールより上に移動してください。',
 
                 ephemeral: true
 
@@ -2191,14 +2441,24 @@ client.on(
 
             }
 
+
+            return interaction.reply({
+
+              content:
+                '❌ ロールの付与に失敗しました。Botの権限を確認してください。',
+
+              ephemeral: true
+
+            });
+
           }
 
         } else {
 
-          await interaction.reply({
+          return interaction.reply({
 
             content:
-              '❌ コードが一致しません。もう一度ボタンを押してやり直してください。',
+              '❌ コードが一致しません。もう一度認証をやり直してください。',
 
             ephemeral: true
 
@@ -2232,8 +2492,11 @@ client.on(
 
 
           activeCaptchas.set(
+
             interaction.user.id,
+
             code
+
           );
 
 
@@ -2258,13 +2521,15 @@ client.on(
               );
 
 
-          return await interaction.reply({
+          return interaction.reply({
 
             content:
-              `以下の認証コードを下の「コードを入力する」ボタンを押して入力してください:\n\n# \` ${code} \``,
+              `以下の認証コードを入力してください。\n\n# \`${code}\``,
 
             components: [
+
               row
+
             ],
 
             ephemeral: true
@@ -2275,7 +2540,7 @@ client.on(
 
 
         // ====================================================
-        // 認証コード入力
+        // モーダル
         // ====================================================
 
         if (
@@ -2374,7 +2639,10 @@ client.on(
 
           try {
 
-            // すでに持っている
+            // ------------------------------------------------
+            // ロールを持っている
+            // ------------------------------------------------
+
             if (
               interaction.member.roles.cache.has(
                 targetRoleId
@@ -2386,7 +2654,7 @@ client.on(
               );
 
 
-              await interaction.editReply({
+              return interaction.editReply({
 
                 content:
                   `❌ **${role.name}** ロールを解除しました。`
@@ -2395,22 +2663,22 @@ client.on(
 
             }
 
-            // 持っていない
-            else {
 
-              await interaction.member.roles.add(
-                role
-              );
+            // ------------------------------------------------
+            // ロールを持っていない
+            // ------------------------------------------------
+
+            await interaction.member.roles.add(
+              role
+            );
 
 
-              await interaction.editReply({
+            return interaction.editReply({
 
-                content:
-                  `✅ **${role.name}** ロールが付与されました！`
+              content:
+                `✅ **${role.name}** ロールが付与されました！`
 
-              });
-
-            }
+            });
 
 
           } catch (error) {
@@ -2425,23 +2693,22 @@ client.on(
               error.code === 50013
             ) {
 
-              await interaction.editReply({
+              return interaction.editReply({
 
                 content:
-                  `❌ **ロール「${role.name}」の操作に失敗しました（権限順位エラー）**\n\n【解決手順】\n1. サーバー設定 ＞ ロールを開く\n2. **ボットのロールを「${role.name}」より上にドラッグ**してください。`
-
-              });
-
-            } else {
-
-              await interaction.editReply({
-
-                content:
-                  '❌ ロールの操作に失敗しました。Botの権限を確認してください。'
+                  `❌ **ロール「${role.name}」の操作に失敗しました。**\n\nBotのロールを「${role.name}」より上に移動してください。`
 
               });
 
             }
+
+
+            return interaction.editReply({
+
+              content:
+                '❌ ロールの操作に失敗しました。Botの権限を確認してください。'
+
+            });
 
           }
 
@@ -2459,6 +2726,7 @@ client.on(
     }
 
   }
+
 );
 
 
