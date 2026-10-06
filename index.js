@@ -4,7 +4,6 @@ const path = require('path');
 
 // ============================================================
 // Webサーバー
-// Render等の常時起動・Keep-Alive用
 // ============================================================
 
 http.createServer((req, res) => {
@@ -41,10 +40,14 @@ const {
 
 const {
   joinVoiceChannel,
-  getVoiceConnection
+  getVoiceConnection,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus
 } = require('@discordjs/voice');
 
 const { createCanvas } = require('@napi-rs/canvas');
+const googleTTS = require('google-tts-api'); // ※npm install google-tts-api が必要です（または下のfetch方式を使用）
 
 
 // ============================================================
@@ -78,7 +81,6 @@ let roleIds = [
   '1537841157315231896'
 ];
 
-// サブ垢対策：作成から何日未満のアカウントを弾くか
 const MIN_ACCOUNT_AGE_DAYS = 7;
 
 // ============================================================
@@ -108,12 +110,13 @@ function defaultGuildSettings() {
     userInfoChannelId: null,
     roleIds: ['1537841157315231896'],
     logChannelId: null,
-    birthdayChannelId: null
+    birthdayChannelId: null,
+    readChannelId: null // 読み上げ対象のテキストチャンネル
   };
 }
 
 function getGuildSettings(guildId) {
-  if (!botSettings[guildId]) botSettings[guildId] = defaultGuildSettings();
+  if (!botSettings[guildId]) botSettings[guildId] = defaultGuildServerSettings = defaultGuildSettings();
   return botSettings[guildId];
 }
 
@@ -126,7 +129,6 @@ function saveSettings() {
   }
 }
 
-// 誕生日データの読み書き
 function loadBirthdays() {
   try {
     if (!fs.existsSync(BIRTHDAYS_FILE)) return {};
@@ -155,6 +157,8 @@ function saveBirthdays() {
 // ============================================================
 const activeCaptchas = new Map();
 const vcJoinTimes = new Map();
+// サーバーごとの読み上げ状態を管理 { guildId: { targetTextChannelId: string, audioPlayer: AudioPlayer } }
+const readingSessions = new Map();
 
 
 // ============================================================
@@ -205,7 +209,7 @@ function createCaptchaImage(text) {
   ctx.fillRect(0, 0, 300, 100);
 
   for (let i = 0; i < 6; i++) {
-    ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`;
+    ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255},${Math.random() * 255}, 0.5)`;
     ctx.lineWidth = Math.random() * 3 + 1;
     ctx.beginPath();
     ctx.moveTo(Math.random() * 300, Math.random() * 100);
@@ -448,7 +452,6 @@ function startBirthdayChecker(c) {
 client.once(Events.ClientReady, async (c) => {
   console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
   
-  // 全サーバーのメンバーを強制フェッチしてキャッシュを完全に同期する
   for (const [guildId, guild] of c.guilds.cache) {
     try {
       await guild.members.fetch();
@@ -458,7 +461,6 @@ client.once(Events.ClientReady, async (c) => {
     }
   }
 
-  // 起動時にすでにVCにいるメンバーの時間を記録（初期化）
   const now = Date.now();
   for (const [guildId, guild] of c.guilds.cache) {
     for (const [channelId, channel] of guild.channels.cache) {
@@ -523,7 +525,19 @@ client.once(Events.ClientReady, async (c) => {
       ),
     new SlashCommandBuilder()
       .setName('leave')
-      .setDescription('ボットをボイスチャンネルから退出させます')
+      .setDescription('ボットをボイスチャンネルから退出させます'),
+    new SlashCommandBuilder()
+      .setName('read')
+      .setDescription('このチャンネルのテキストメッセージの読み上げを開始します')
+      .addChannelOption(option =>
+        option.setName('voice_channel')
+          .setDescription('読み上げを行うボイスチャンネル（省略時はあなたがいるVC）')
+          .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('stop')
+      .setDescription('読み上げを停止し、ボットをVCから退出させます')
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -534,13 +548,12 @@ client.once(Events.ClientReady, async (c) => {
     console.error('[スラッシュコマンド] 登録エラー:', error);
   }
 
-  // 誕生日チェッカー起動
   startBirthdayChecker(c);
 });
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室の監視（滞在時間計測用）
+// イベント: ボイスチャンネル入退室の監視
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -561,6 +574,47 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
 
 // ============================================================
+// イベント: メッセージ受信（読み上げ処理）
+// ============================================================
+
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot || !message.guild) return;
+
+  const session = readingSessions.get(message.guild.id);
+  if (!session) return;
+
+  // 読み上げ対象のテキストチャンネルが指定されている場合、そこからのメッセージだけを読み上げる
+  if (session.textChannelId && message.channel.id !== session.textChannelId) return;
+
+  // URLやメンション、特殊文字を除外・変換して読みやすくする
+  let textToRead = message.content
+    .replace(/https?:\/['\S]+/g, 'リンク')
+    .replace(/<@!?&?\d+>/g, 'さん');
+
+  if (!textToRead) return;
+  // 長すぎるメッセージは切り詰める
+  if (textToRead.length > 100) {
+    textToRead = textToRead.substring(0, 100) + '、以下略';
+  }
+
+  try {
+    // Google TTSの音声URLを取得（日本語: 'ja'）
+    const audioUrl = googleTTS.getAudioUrl(textToRead, {
+      lang: 'ja',
+      slow: false,
+      host: 'https://translate.google.com',
+      timeout: 10000,
+    });
+
+    const resource = createAudioResource(audioUrl);
+    session.audioPlayer.play(resource);
+  } catch (error) {
+    console.error('読み上げ音声生成エラー:', error);
+  }
+});
+
+
+// ============================================================
 // イベント: インタラクション処理
 // ============================================================
 
@@ -568,7 +622,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const guild = interaction.guild;
   if (!guild) return;
 
-  // 1. スラッシュコマンド
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
@@ -619,15 +672,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         if (day > daysInMonth[month]) {
-          return interaction.reply({ content: `❌ ${month}月に ${day}日 は存在しません。正しい日付を指定してください。`, ephemeral: true });
+          return interaction.reply({ content: `❌ ${month}月に ${day}日 は存在しません。`, ephemeral: true });
         }
 
         if (!birthdayData[guild.id]) birthdayData[guild.id] = {};
-        birthdayData[guild.id][interaction.user.id] = {
-          month,
-          day,
-          lastCelebrated: null
-        };
+        birthdayData[guild.id][interaction.user.id] = { month, day, lastCelebrated: null };
         saveBirthdays();
 
         await interaction.reply({ content: `🎂 あなたの誕生日を **${month}月${day}日** に登録しました！`, ephemeral: true });
@@ -638,19 +687,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const bday = guildBdays[targetUser.id];
 
         if (!bday) {
-          const msg = targetUser.id === interaction.user.id 
-            ? 'あなたの誕生日はまだ登録されていません。`/birthday set` で登録してください！' 
-            : `${targetUser.tag} の誕生日は登録されていません。`;
-          return interaction.reply({ content: msg, ephemeral: true });
+          return interaction.reply({ content: '誕生日は登録されていません。', ephemeral: true });
         }
-
         await interaction.reply({ content: `📅 **${targetUser.tag}** さんのお誕生日：**${bday.month}月${bday.day}日**`, ephemeral: true });
       }
     }
 
     else if (commandName === 'vc-time') {
       await interaction.deferReply();
-
       const voiceChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice);
       
       const embed = new EmbedBuilder()
@@ -663,20 +707,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       for (const [channelId, channel] of voiceChannels) {
         const humanMembers = channel.members.filter(m => !m.user.bot);
-
         if (humanMembers.size > 0) {
           activeVcCount++;
           let memberLines = [];
 
           for (const [memberId, member] of humanMembers) {
             const key = `${guild.id}_${memberId}`;
-            let joinTime = vcJoinTimes.get(key);
-
-            if (!joinTime) {
-              joinTime = now;
-              vcJoinTimes.set(key, now);
-            }
-
+            let joinTime = vcJoinTimes.get(key) || now;
             const diffMs = now - joinTime;
             const totalSeconds = Math.floor(diffMs / 1000);
             const hours = Math.floor(totalSeconds / 3600);
@@ -688,7 +725,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             if (minutes > 0 || hours > 0) timeString += `${minutes}分 `;
             timeString += `${seconds}秒`;
 
-            memberLines.push(`• **${member.displayName}** : ⏱️ \`${timeString}\`（入室中）`);
+            memberLines.push(`• **${member.displayName}** : ⏱️ \`${timeString}\``);
           }
 
           embed.addFields({
@@ -706,12 +743,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     }
 
-    // VCに参加する機能
     else if (commandName === 'join') {
       const targetChannel = interaction.options.getChannel('channel') || interaction.member.voice.channel;
-
       if (!targetChannel) {
-        return interaction.reply({ content: '❌ 参加するボイスチャンネルを指定するか、あなたがボイスチャンネルに参加した状態で実行してください。', ephemeral: true });
+        return interaction.reply({ content: '❌ ボイスチャンネルを指定するか、VCに参加した状態で実行してください。', ephemeral: true });
       }
 
       try {
@@ -719,9 +754,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
           channelId: targetChannel.id,
           guildId: guild.id,
           adapterCreator: guild.voiceAdapterCreator,
-          selfDeaf: false // 必要に応じてスピーカーミュートにする場合は true
+          selfDeaf: false
         });
-
         await interaction.reply({ content: `🔊 **${targetChannel.name}** に参加しました！`, ephemeral: true });
       } catch (error) {
         console.error('VC参加エラー:', error);
@@ -729,15 +763,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     }
 
-    // VCから退出する機能
     else if (commandName === 'leave') {
       const connection = getVoiceConnection(guild.id);
-
       if (!connection) {
-        return interaction.reply({ content: '❌ ボットは現在どのボイスチャンネルにも参加していません。', ephemeral: true });
+        return interaction.reply({ content: '❌ ボットはどのボイスチャンネルにも参加していません。', ephemeral: true });
       }
 
       try {
+        readingSessions.delete(guild.id);
         connection.destroy();
         await interaction.reply({ content: '👋 ボイスチャンネルから退出しました。', ephemeral: true });
       } catch (error) {
@@ -745,9 +778,53 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({ content: '❌ 退出処理中にエラーが発生しました。', ephemeral: true });
       }
     }
+
+    // 読み上げ開始コマンド
+    else if (commandName === 'read') {
+      const targetVc = interaction.options.getChannel('voice_channel') || interaction.member.voice.channel;
+      if (!targetVc) {
+        return interaction.reply({ content: '❌ 参加するボイスチャンネルを指定するか、VCに参加した状態で実行してください。', ephemeral: true });
+      }
+
+      try {
+        let connection = getVoiceConnection(guild.id);
+        if (!connection) {
+          connection = joinVoiceChannel({
+            channelId: targetVc.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: false
+          });
+        }
+
+        const audioPlayer = createAudioPlayer();
+        connection.subscribe(audioPlayer);
+
+        readingSessions.set(guild.id, {
+          textChannelId: interaction.channel.id,
+          audioPlayer: audioPlayer
+        });
+
+        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) のメッセージの読み上げを **${targetVc.name}** で開始します！`, ephemeral: true });
+      } catch (error) {
+        console.error('読み上げ開始エラー:', error);
+        await interaction.reply({ content: '❌ 読み上げの開始に失敗しました。', ephemeral: true });
+      }
+    }
+
+    // 読み上げ停止コマンド
+    else if (commandName === 'stop') {
+      const connection = getVoiceConnection(guild.id);
+      readingSessions.delete(guild.id);
+
+      if (connection) {
+        connection.destroy();
+      }
+
+      await interaction.reply({ content: '🛑 読み上げを停止し、VCから退出しました。', ephemeral: true });
+    }
   }
 
-  // 2. セレクトメニュー
   else if (interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) {
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
@@ -760,19 +837,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       saveSettings();
       await interaction.update(buildVerifyAdminPanel(guild));
     }
-
     else if (interaction.customId === 'select_log_channel') {
       settings.logChannelId = interaction.values[0];
       saveSettings();
       await interaction.update(buildVerifyAdminPanel(guild));
     }
-
     else if (interaction.customId === 'select_multi_roles') {
       settings.roleIds = interaction.values;
       saveSettings();
       await interaction.update(buildRoleAdminPanel(guild));
     }
-
     else if (interaction.customId === 'select_birthday_channel') {
       settings.birthdayChannelId = interaction.values[0];
       saveSettings();
@@ -780,7 +854,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // 3. ボタン操作
   else if (interaction.isButton()) {
     if (interaction.customId === 'admin_deploy_verify_panel') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -789,7 +862,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setTitle('🔒 メンバー認証')
-        .setDescription('下の「認証する」ボタンを押して、画像認証を行ってください。\n※作成から日数の浅いアカウント（サブ垢等）は認証できません。')
+        .setDescription('下のボタンを押して画像認証を行ってください。')
         .setColor(0x00FF00);
 
       const row = new ActionRowBuilder().addComponents(
@@ -797,9 +870,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
 
       await interaction.channel.send({ embeds: [embed], components: [row] });
-      await interaction.reply({ content: '認証パネルをこのチャンネルに設置しました！', ephemeral: true });
+      await interaction.reply({ content: '認証パネルを設置しました！', ephemeral: true });
     }
-
     else if (interaction.customId === 'admin_deploy_role_panel') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
@@ -808,25 +880,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const components = buildRolePanelComponents(guild);
       const embed = new EmbedBuilder()
         .setTitle('🏷️ ロール選択パネル')
-        .setDescription('ボタンを押してロールの取得・解除を行えます。')
+        .setDescription('ボタンを押してロールを取得できます。')
         .setColor(0x5865F2);
 
       await interaction.channel.send({ embeds: [embed], components: components });
-      await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
+      await interaction.reply({ content: 'ロール選択パネルを設置しました！', ephemeral: true });
     }
-
     else if (interaction.customId === 'start_verify') {
       const user = interaction.user;
-      const createdTimestamp = user.createdTimestamp;
-      const now = Date.now();
-      const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
+      const accountAgeDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
 
       if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-        await sendLog(guild, interaction.member, '⚠ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
-        return interaction.reply({
-          content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウント（サブ垢・新規垢）では認証できません。（あなたのアカウント作成から約 ${Math.floor(accountAgeDays)} 日経過）`,
-          ephemeral: true
-        });
+        return interaction.reply({ content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のため認証できません。`, ephemeral: true });
       }
 
       const code = generateCaptchaCode();
@@ -837,20 +902,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const embed = new EmbedBuilder()
         .setTitle('画像認証')
-        .setDescription('下の画像に表示されている6文字の半角英数字を確認し、下の「回答を入力する」ボタンを押してください。')
+        .setDescription('画像内の6文字を確認し、ボタンから入力してください。')
         .setImage('attachment://captcha.png')
         .setColor(0x5865F2);
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('open_verify_modal')
-          .setLabel('✏️ 回答を入力する')
-          .setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('open_verify_modal').setLabel('✏️ 回答を入力する').setStyle(ButtonStyle.Primary)
       );
 
       await interaction.reply({ embeds: [embed], files: [attachment], components: [row], ephemeral: true });
     }
-
     else if (interaction.customId === 'open_verify_modal') {
       const modal = new ModalBuilder()
         .setCustomId('verify_modal')
@@ -858,7 +919,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const textInput = new TextInputBuilder()
         .setCustomId('verify_code_input')
-        .setLabel('画像の中の6文字を入力してください')
+        .setLabel('6文字を入力してください')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
         .setMaxLength(6)
@@ -867,7 +928,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       modal.addComponents(new ActionRowBuilder().addComponents(textInput));
       await interaction.showModal(modal);
     }
-
     else if (interaction.customId.startsWith('toggle_role_')) {
       const roleId = interaction.customId.replace('toggle_role_', '');
       const member = interaction.member;
@@ -882,14 +942,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // 4. モーダル送信（画像認証の答え合わせ）
   else if (interaction.isModalSubmit()) {
     if (interaction.customId === 'verify_modal') {
       const userInput = interaction.fields.getTextInputValue('verify_code_input').trim();
       const expectedCode = activeCaptchas.get(interaction.user.id);
 
       if (!expectedCode || userInput.toUpperCase() !== expectedCode) {
-        return interaction.reply({ content: '❌ 認証コードが間違っています。もう一度やり直してください。', ephemeral: true });
+        return interaction.reply({ content: '❌ 認証コードが間違っています。', ephemeral: true });
       }
 
       activeCaptchas.delete(interaction.user.id);
@@ -898,14 +957,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (settings.verifyRoleId) {
         try {
           await interaction.member.roles.add(settings.verifyRoleId);
-          await interaction.reply({ content: '✅ 認証に成功しました！ロールが付与されました。', ephemeral: true });
+          await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
           await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が画像認証をクリアしました。`);
         } catch (e) {
-          console.error('認証ロール付与失敗:', e);
-          await interaction.reply({ content: '⚠️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
+          await interaction.reply({ content: '⚠️ ロールの付与に失敗しました。', ephemeral: true });
         }
       } else {
-        await interaction.reply({ content: '✅ 認証に成功しました！（付与ロールが未設定です）', ephemeral: true });
+        await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
       }
     }
   }
@@ -913,7 +971,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 // ============================================================
-// ログイン処理（Discordへの接続）
+// ログイン処理
 // ============================================================
 
 client.login(process.env.DISCORD_TOKEN);
