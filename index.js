@@ -43,7 +43,7 @@ const client = new Client({
 });
 
 // --- 設定データ保持用変数 ---
-let verifyRoleId = '1537841157315231896'; // 画像認証ロールID
+let verifyRoleId = '1537841157315231896'; // 認証ロールID
 let userInfoChannelId = null; // ログチャンネルID
 let roleIds = ['1537841157315231896']; // ロールパネル用ロールIDリスト
 
@@ -53,20 +53,24 @@ const activeCaptchas = new Map();
 // --- 便利関数: ログ送信 ---
 async function sendLog(guild, member, title, description, color = 0x00FF00) {
   if (!userInfoChannelId) return;
-  const logChannel = guild.channels.cache.get(userInfoChannelId);
-  if (!logChannel) return;
+  try {
+    const logChannel = guild.channels.cache.get(userInfoChannelId);
+    if (!logChannel) return;
 
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setColor(color)
-    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-    .setDescription(description)
-    .setTimestamp();
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setColor(color)
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+      .setDescription(description)
+      .setTimestamp();
 
-  await logChannel.send({ embeds: [embed] }).catch(err => console.error('ログ送信失敗:', err));
+    await logChannel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error('ログ送信失敗:', err);
+  }
 }
 
-// --- テキストコード生成 (画数代わり) ---
+// --- テキストコード生成 ---
 function generateCaptchaCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let text = '';
@@ -201,188 +205,207 @@ client.on(Events.ClientReady, async () => {
 
 // --- インタラクション処理 ---
 client.on(Events.InteractionCreate, async interaction => {
-
-  // --- スラッシュコマンド ---
-  if (interaction.isChatInputCommand()) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ このコマンドは管理者専用です。', ephemeral: true });
-    }
-
-    if (interaction.commandName === 'setup-verify') {
-      return interaction.reply(buildVerifyAdminPanel());
-    }
-
-    if (interaction.commandName === 'verify') {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('start_captcha_verify').setLabel('🔒 認証を開始').setStyle(ButtonStyle.Success)
-      );
-      return interaction.reply({
-        content: '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
-        components: [row]
-      });
-    }
-
-    if (interaction.commandName === 'setup-role') {
-      return interaction.reply(buildRoleAdminPanel());
-    }
-
-    if (interaction.commandName === 'role-panel') {
-      const components = buildRolePanelComponents(interaction.guild);
-      if (components.length === 0) {
-        return interaction.reply({ content: '⚠️ ロールが選択されていません。`/setup-role` で設定してください。', ephemeral: true });
-      }
-      return interaction.reply({
-        content: '📋 **ロール選択**\n以下のボタンを押してロールを取得・解除できます。',
-        components: components
-      });
-    }
-  }
-
-  // --- ドロップダウンメニューの操作 ---
-  if (interaction.isRoleSelectMenu()) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
-    }
-
-    if (interaction.customId === 'select_verify_role') {
-      verifyRoleId = interaction.values[0];
-      await interaction.update(buildVerifyAdminPanel());
-      return;
-    }
-
-    if (interaction.customId === 'select_multi_roles') {
-      roleIds = interaction.values;
-      await interaction.update(buildRoleAdminPanel());
-      return;
-    }
-  }
-
-  if (interaction.isChannelSelectMenu()) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
-    }
-
-    if (interaction.customId === 'select_log_channel') {
-      userInfoChannelId = interaction.values[0] || null;
-      
-      if (interaction.message.embeds[0]?.title?.includes('認証')) {
-        await interaction.update(buildVerifyAdminPanel());
-      } else {
-        await interaction.update(buildRoleAdminPanel());
-      }
-      return;
-    }
-  }
-
-  // --- 管理パネル ボタン操作 ---
-  if (interaction.isButton() && interaction.customId.startsWith('admin_')) {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
-    }
-
-    if (interaction.customId === 'admin_deploy_verify_panel') {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('start_captcha_verify').setLabel('🔒 認証を開始').setStyle(ButtonStyle.Success)
-      );
-      await interaction.channel.send({
-        content: '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
-        components: [row]
-      });
-      return await interaction.reply({ content: '✅ 認証パネルを設置しました！', ephemeral: true });
-    }
-
-    if (interaction.customId === 'admin_deploy_role_panel') {
-      const components = buildRolePanelComponents(interaction.guild);
-      if (components.length === 0) return interaction.reply({ content: '⚠️ ロールが選択されていません。', ephemeral: true });
-
-      await interaction.channel.send({
-        content: '📋 **ロール選択**\n以下のボタンを押してロールを取得・解除できます。',
-        components: components
-      });
-      return await interaction.reply({ content: '✅ ロール選択パネルを設置しました！', ephemeral: true });
-    }
-  }
-
-  // --- モーダル送信処理 ---
-  if (interaction.isModalSubmit() && interaction.customId === 'modal_submit_captcha') {
-    const userAnswer = interaction.fields.getTextInputValue('input_captcha_answer').trim().toUpperCase();
-    const correctAnswer = activeCaptchas.get(interaction.user.id);
-
-    if (!correctAnswer) {
-      return interaction.reply({ content: '❌ 認証セッションの期限が切れました。もう一度ボタンを押してください。', ephemeral: true });
-    }
-
-    if (userAnswer === correctAnswer) {
-      activeCaptchas.delete(interaction.user.id);
-      const role = interaction.guild.roles.cache.get(verifyRoleId);
-
-      if (!role) {
-        return interaction.reply({ content: '⚠️ 認証用ロールが見つかりませんでした。', ephemeral: true });
+  try {
+    // --- スラッシュコマンド ---
+    if (interaction.isChatInputCommand()) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ このコマンドは管理者専用です。', ephemeral: true });
       }
 
-      try {
-        await interaction.member.roles.add(role);
-        await interaction.reply({ content: `🎉 **認証成功！** <@&${verifyRoleId}> ロールが付与されました。`, ephemeral: true });
-        await sendLog(interaction.guild, interaction.member, '🔒 認証成功', `ユーザー: ${interaction.user.tag} (<@${interaction.user.id}>)`);
-      } catch (err) {
-        console.error(err);
-        await interaction.reply({ content: '❌ ロールの付与に失敗しました。Botの権限順位を確認してください。', ephemeral: true });
-      }
-    } else {
-      await interaction.reply({ content: '❌ コードが一致しません。もう一度ボタンを押してやり直してください。', ephemeral: true });
-    }
-  }
-
-  // --- 一般ユーザー用ボタン操作 ---
-  if (interaction.isButton()) {
-    // 認証ボタン押下
-    if (interaction.customId === 'start_captcha_verify') {
-      const code = generateCaptchaCode();
-      activeCaptchas.set(interaction.user.id, code);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_captcha_modal').setLabel('コードを入力する').setStyle(ButtonStyle.Primary)
-      );
-
-      return await interaction.reply({
-        content: `以下の認証コードを下の「コードを入力する」ボタンを押して入力してください:\n\n# \` ${code} \``,
-        components: [row],
-        ephemeral: true
-      });
-    }
-
-    // 回答入力モーダル呼び出し
-    if (interaction.customId === 'open_captcha_modal') {
-      const modal = new ModalBuilder().setCustomId('modal_submit_captcha').setTitle('メンバー認証');
-      const input = new TextInputBuilder().setCustomId('input_captcha_answer').setLabel('表示された6桁の認証コード').setStyle(TextInputStyle.Short).setRequired(true);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      return await interaction.showModal(modal);
-    }
-
-    // ロール選択ボタン押下 (トロール切り替え)
-    if (interaction.customId.startsWith('toggle_role_')) {
-      const targetRoleId = interaction.customId.replace('toggle_role_', '');
-      const role = interaction.guild.roles.cache.get(targetRoleId);
-
-      if (!role) {
-        return interaction.reply({ content: '⚠️ ロールが見つかりません。', ephemeral: true });
+      if (interaction.commandName === 'setup-verify') {
+        return interaction.reply(buildVerifyAdminPanel());
       }
 
-      try {
-        if (interaction.member.roles.cache.has(targetRoleId)) {
-          await interaction.member.roles.remove(role);
-          await interaction.reply({ content: `❌ **${role.name}** ロールを解除しました。`, ephemeral: true });
-          await sendLog(interaction.guild, interaction.member, '🏷️ ロール解除', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0xFF0000);
-        } else {
-          await interaction.member.roles.add(role);
-          await interaction.reply({ content: `✅ **${role.name}** ロールが付与されました！`, ephemeral: true });
-          await sendLog(interaction.guild, interaction.member, '🏷️️ ロール付与', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0x00FF00);
+      if (interaction.commandName === 'verify') {
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('start_captcha_verify').setLabel('🔒 認証を開始').setStyle(ButtonStyle.Success)
+        );
+        return interaction.reply({
+          content: '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
+          components: [row]
+        });
+      }
+
+      if (interaction.commandName === 'setup-role') {
+        return interaction.reply(buildRoleAdminPanel());
+      }
+
+      if (interaction.commandName === 'role-panel') {
+        const components = buildRolePanelComponents(interaction.guild);
+        if (components.length === 0) {
+          return interaction.reply({ content: '⚠️ ロールが選択されていません。`/setup-role` で設定してください。', ephemeral: true });
         }
-      } catch (error) {
-        console.error(error);
-        await interaction.reply({ content: '❌ ロールの操作に失敗しました。Botの権限順位を確認してください。', ephemeral: true });
+        return interaction.reply({
+          content: '📋 **ロール選択**\n以下のボタンを押してロールを取得・解除できます。',
+          components: components
+        });
       }
     }
+
+    // --- ドロップダウンメニューの操作 ---
+    if (interaction.isRoleSelectMenu()) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
+      }
+
+      if (interaction.customId === 'select_verify_role') {
+        verifyRoleId = interaction.values[0];
+        await interaction.update(buildVerifyAdminPanel());
+        return;
+      }
+
+      if (interaction.customId === 'select_multi_roles') {
+        roleIds = interaction.values;
+        await interaction.update(buildRoleAdminPanel());
+        return;
+      }
+    }
+
+    if (interaction.isChannelSelectMenu()) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
+      }
+
+      if (interaction.customId === 'select_log_channel') {
+        userInfoChannelId = interaction.values[0] || null;
+        
+        if (interaction.message.embeds[0]?.title?.includes('認証')) {
+          await interaction.update(buildVerifyAdminPanel());
+        } else {
+          await interaction.update(buildRoleAdminPanel());
+        }
+        return;
+      }
+    }
+
+    // --- 管理パネル ボタン操作 ---
+    if (interaction.isButton() && interaction.customId.startsWith('admin_')) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
+      }
+
+      if (interaction.customId === 'admin_deploy_verify_panel') {
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('start_captcha_verify').setLabel('🔒 認証を開始').setStyle(ButtonStyle.Success)
+        );
+        await interaction.channel.send({
+          content: '📋 **メンバー認証**\n以下のボタンを押してコード認証を行ってください。',
+          components: [row]
+        });
+        return await interaction.reply({ content: '✅ 認証パネルを設置しました！', ephemeral: true });
+      }
+
+      if (interaction.customId === 'admin_deploy_role_panel') {
+        const components = buildRolePanelComponents(interaction.guild);
+        if (components.length === 0) return interaction.reply({ content: '⚠️ ロールが選択されていません。', ephemeral: true });
+
+        await interaction.channel.send({
+          content: '📋 **ロール選択**\n以下のボタンを押してロールを取得・解除できます。',
+          components: components
+        });
+        return await interaction.reply({ content: '✅ ロール選択パネルを設置しました！', ephemeral: true });
+      }
+    }
+
+    // --- モーダル送信処理 ---
+    if (interaction.isModalSubmit() && interaction.customId === 'modal_submit_captcha') {
+      const userAnswer = interaction.fields.getTextInputValue('input_captcha_answer').trim().toUpperCase();
+      const correctAnswer = activeCaptchas.get(interaction.user.id);
+
+      if (!correctAnswer) {
+        return interaction.reply({ content: '❌ 認証セッションの期限が切れました。もう一度ボタンを押してください。', ephemeral: true });
+      }
+
+      if (userAnswer === correctAnswer) {
+        activeCaptchas.delete(interaction.user.id);
+        const role = interaction.guild.roles.cache.get(verifyRoleId);
+
+        if (!role) {
+          return interaction.reply({ content: '⚠️ 認証用ロールが見つかりませんでした。', ephemeral: true });
+        }
+
+        try {
+          await interaction.member.roles.add(role);
+          await interaction.reply({ content: `🎉 **認証成功！** <@&${verifyRoleId}> ロールが付与されました。`, ephemeral: true });
+          await sendLog(interaction.guild, interaction.member, '🔒 認証成功', `ユーザー: ${interaction.user.tag} (<@${interaction.user.id}>)`);
+        } catch (err) {
+          console.error('ロール付与エラー:', err);
+          if (err.code === 50013) {
+            await interaction.reply({ 
+              content: '❌ **ロールの付与に失敗しました（権限エラー）**\n\n【解決方法】\nDiscordの`サーバー設定` ＞ `ロール` で、**Botのロールを付与したいロールより「上」にドラッグ**してください！', 
+              ephemeral: true 
+            });
+          } else {
+            await interaction.reply({ content: '❌ ロールの付与に失敗しました。Botの権限を確認してください。', ephemeral: true });
+          }
+        }
+      } else {
+        await interaction.reply({ content: '❌ コードが一致しません。もう一度ボタンを押してやり直してください。', ephemeral: true });
+      }
+    }
+
+    // --- 一般ユーザー用ボタン操作 ---
+    if (interaction.isButton()) {
+      // 1. 認証ボタン押下
+      if (interaction.customId === 'start_captcha_verify') {
+        const code = generateCaptchaCode();
+        activeCaptchas.set(interaction.user.id, code);
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('open_captcha_modal').setLabel('コードを入力する').setStyle(ButtonStyle.Primary)
+        );
+
+        return await interaction.reply({
+          content: `以下の認証コードを下の「コードを入力する」ボタンを押して入力してください:\n\n# \` ${code} \``,
+          components: [row],
+          ephemeral: true
+        });
+      }
+
+      // 2. 回答入力モーダル呼び出し
+      if (interaction.customId === 'open_captcha_modal') {
+        const modal = new ModalBuilder().setCustomId('modal_submit_captcha').setTitle('メンバー認証');
+        const input = new TextInputBuilder().setCustomId('input_captcha_answer').setLabel('表示された6桁の認証コード').setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        return await interaction.showModal(modal);
+      }
+
+      // 3. ロール選択ボタン押下 (トロール切り替え)
+      if (interaction.customId.startsWith('toggle_role_')) {
+        // 処理保留応答（応答なしエラーを防ぐ）
+        await interaction.deferReply({ ephemeral: true });
+
+        const targetRoleId = interaction.customId.replace('toggle_role_', '');
+        const role = interaction.guild.roles.cache.get(targetRoleId);
+
+        if (!role) {
+          return interaction.editReply({ content: '⚠️ ロールが見つかりません。`/setup-role` で設定し直してください。' });
+        }
+
+        try {
+          if (interaction.member.roles.cache.has(targetRoleId)) {
+            await interaction.member.roles.remove(role);
+            await interaction.editReply({ content: `❌ **${role.name}** ロールを解除しました。` });
+            await sendLog(interaction.guild, interaction.member, '🏷️ ロール解除', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0xFF0000);
+          } else {
+            await interaction.member.roles.add(role);
+            await interaction.editReply({ content: `✅ **${role.name}** ロールが付与されました！` });
+            await sendLog(interaction.guild, interaction.member, '🏷️ ロール付与', `ユーザー: ${interaction.user.tag}\nロール: **${role.name}**`, 0x00FF00);
+          }
+        } catch (error) {
+          console.error('ロール操作エラー:', error);
+          if (error.code === 50013) {
+            await interaction.editReply({ 
+              content: `❌ **ロール「${role.name}」の操作に失敗しました（権限不足）**\n\n【解決手順】\n1. サーバー設定 ＞ ロール を開く\n2. **ボットのロール（まったりボット）を「${role.name}」より上の位置にドラッグ**して保存してください。` 
+            });
+          } else {
+            await interaction.editReply({ content: '❌ ロールの操作に失敗しました。Botの権限を確認してください。' });
+          }
+        }
+      }
+    }
+  } catch (globalError) {
+    console.error('全体エラー:', globalError);
   }
 });
 
