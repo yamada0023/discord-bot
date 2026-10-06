@@ -382,6 +382,8 @@ client.once(Events.ClientReady, async (c) => {
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  if (newState.member?.user.bot) return; // ボットは除外
+
   const userId = newState.member.id;
   const guildId = newState.guild.id;
   const key = `${guildId}_${userId}`;
@@ -395,7 +397,6 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   else if (oldState.channelId && !newState.channelId) {
     vcJoinTimes.delete(key);
   }
-  // ※別のVCに移動した場合はそのまま継続、またはリセットするかはお好みですが、今回は入室時点からを継続とします
 });
 
 
@@ -463,12 +464,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const now = Date.now();
 
       for (const [channelId, channel] of voiceChannels) {
-        const members = channel.members;
-        if (members.size > 0) {
+        // ボットを除外したメンバーだけにする
+        const humanMembers = channel.members.filter(m => !m.user.bot);
+
+        if (humanMembers.size > 0) {
           activeVcCount++;
           let memberLines = [];
 
-          for (const [memberId, member] of members) {
+          for (const [memberId, member] of humanMembers) {
             const key = `${guild.id}_${memberId}`;
             let joinTime = vcJoinTimes.get(key);
 
@@ -493,7 +496,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           }
 
           embed.addFields({
-            name: `🔊 ${channel.name} (${members.size}人)`,
+            name: `🔊 ${channel.name} (${humanMembers.size}人)`,
             value: memberLines.join('\n'),
             inline: false
           });
@@ -645,7 +648,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が画像認証をクリアしました。`);
         } catch (e) {
           console.error('認証ロール付与失敗:', e);
-          await interaction.reply({ content: '⚠️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
+          await interaction.reply({ content: '⚠️️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
         }
       } else {
         await interaction.reply({ content: '✅ 認証に成功しました！（付与ロールが未設定です）', ephemeral: true });
