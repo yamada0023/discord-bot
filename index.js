@@ -47,7 +47,6 @@ const {
 } = require('@discordjs/voice');
 
 const { createCanvas } = require('@napi-rs/canvas');
-const googleTTS = require('google-tts-api'); // ※npm install google-tts-api が必要です（または下のfetch方式を使用）
 
 
 // ============================================================
@@ -111,12 +110,13 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     birthdayChannelId: null,
-    readChannelId: null // 読み上げ対象のテキストチャンネル
+    readChannelId: null,
+    speakerId: 3 // デフォルト話者ID (例: 3 = ずんだもん等)
   };
 }
 
 function getGuildSettings(guildId) {
-  if (!botSettings[guildId]) botSettings[guildId] = defaultGuildServerSettings = defaultGuildSettings();
+  if (!botSettings[guildId]) botSettings[guildId] = defaultGuildSettings();
   return botSettings[guildId];
 }
 
@@ -157,7 +157,7 @@ function saveBirthdays() {
 // ============================================================
 const activeCaptchas = new Map();
 const vcJoinTimes = new Map();
-// サーバーごとの読み上げ状態を管理 { guildId: { targetTextChannelId: string, audioPlayer: AudioPlayer } }
+// サーバーごとの読み上げ状態を管理 { guildId: { textChannelId: string, audioPlayer: AudioPlayer } }
 const readingSessions = new Map();
 
 
@@ -528,7 +528,7 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('ボットをボイスチャンネルから退出させます'),
     new SlashCommandBuilder()
       .setName('read')
-      .setDescription('このチャンネルのテキストメッセージの読み上げを開始します')
+      .setDescription('このチャンネルの高精度音声読み上げを開始します')
       .addChannelOption(option =>
         option.setName('voice_channel')
           .setDescription('読み上げを行うボイスチャンネル（省略時はあなたがいるVC）')
@@ -574,7 +574,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
 
 // ============================================================
-// イベント: メッセージ受信（読み上げ処理）
+// イベント: メッセージ受信（高精度音声合成による読み上げ処理）
 // ============================================================
 
 client.on(Events.MessageCreate, async (message) => {
@@ -583,33 +583,44 @@ client.on(Events.MessageCreate, async (message) => {
   const session = readingSessions.get(message.guild.id);
   if (!session) return;
 
-  // 読み上げ対象のテキストチャンネルが指定されている場合、そこからのメッセージだけを読み上げる
   if (session.textChannelId && message.channel.id !== session.textChannelId) return;
 
-  // URLやメンション、特殊文字を除外・変換して読みやすくする
   let textToRead = message.content
     .replace(/https?:\/['\S]+/g, 'リンク')
     .replace(/<@!?&?\d+>/g, 'さん');
 
   if (!textToRead) return;
-  // 長すぎるメッセージは切り詰める
   if (textToRead.length > 100) {
     textToRead = textToRead.substring(0, 100) + '、以下略';
   }
 
   try {
-    // Google TTSの音声URLを取得（日本語: 'ja'）
-    const audioUrl = googleTTS.getAudioUrl(textToRead, {
-      lang: 'ja',
-      slow: false,
-      host: 'https://translate.google.com',
-      timeout: 10000,
+    const settings = getGuildSettings(message.guild.id);
+    const speaker = settings.speakerId || 3;
+
+    // VOICEVOX形式（または互換WEB API）から音声データを取得する例
+    // ※外部の公開VOICEVOX APIサービス等を利用する場合のエンドポイントを指定できます
+    const apiEndpoint = process.env.VOICEVOX_API_URL || 'https://api.tts.quest/v3/voicevox/synthesis';
+    const params = new URLSearchParams({
+      speaker: speaker,
+      text: textToRead
     });
+
+    const response = await fetch(`${apiEndpoint}?${params.toString()}`);
+    if (!response.ok) {
+      console.error('音声APIリクエスト失敗:', response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+    // tts.quest などのAPI構造に対応、または音声ファイルのダウンロードURLからリソース作成
+    const audioUrl = data.mp3StreamingUrl || data.audioUrl;
+    if (!audioUrl) return;
 
     const resource = createAudioResource(audioUrl);
     session.audioPlayer.play(resource);
   } catch (error) {
-    console.error('読み上げ音声生成エラー:', error);
+    console.error('高品質読み上げ音声生成エラー:', error);
   }
 });
 
@@ -779,7 +790,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     }
 
-    // 読み上げ開始コマンド
     else if (commandName === 'read') {
       const targetVc = interaction.options.getChannel('voice_channel') || interaction.member.voice.channel;
       if (!targetVc) {
@@ -805,14 +815,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
           audioPlayer: audioPlayer
         });
 
-        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) のメッセージの読み上げを **${targetVc.name}** で開始します！`, ephemeral: true });
+        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) の高精度音声読み上げを **${targetVc.name}** で開始します！`, ephemeral: true });
       } catch (error) {
         console.error('読み上げ開始エラー:', error);
         await interaction.reply({ content: '❌ 読み上げの開始に失敗しました。', ephemeral: true });
       }
     }
 
-    // 読み上げ停止コマンド
     else if (commandName === 'stop') {
       const connection = getVoiceConnection(guild.id);
       readingSessions.delete(guild.id);
