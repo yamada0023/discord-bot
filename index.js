@@ -178,7 +178,18 @@ client.on(Events.ClientReady, async () => {
     new SlashCommandBuilder().setName('setup-verify').setDescription('認証の設定管理画面を表示します'),
     new SlashCommandBuilder().setName('verify').setDescription('認証パネルを設置します'),
     new SlashCommandBuilder().setName('setup-role').setDescription('ロール付与パネルの設定管理画面を表示します'),
-    new SlashCommandBuilder().setName('role-panel').setDescription('ロール選択パネルを設置します')
+    new SlashCommandBuilder().setName('role-panel').setDescription('ロール選択パネルを設置します'),
+    // ★ ここに /clear コマンドを追加しました
+    new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('指定した件数のメッセージを一括削除します')
+      .addIntegerOption(option =>
+        option.setName('amount')
+          .setDescription('削除する件数 (1〜100)')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100)
+      )
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(client.token);
@@ -196,6 +207,26 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     // スラッシュコマンド
     if (interaction.isChatInputCommand()) {
+      // ★ ここに /clear コマンドの実際の処理を追加しました
+      if (interaction.commandName === 'clear') {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+          return interaction.reply({ content: '❌ このコマンドを使用するには「メッセージの管理」権限が必要です。', ephemeral: true });
+        }
+
+        const amount = interaction.options.getInteger('amount');
+
+        try {
+          // bulkDeleteの第2引数を true にすると14日より古いメッセージを自動で除外してエラーを防ぎます
+          const deleted = await interaction.channel.bulkDelete(amount, true);
+          await interaction.reply({ content: `🧹 **${deleted.size}** 件のメッセージを削除しました。`, ephemeral: true });
+        } catch (error) {
+          console.error('メッセージ削除エラー:', error);
+          await interaction.reply({ content: '❌ メッセージの削除に失敗しました。（14日以上経過したメッセージは一括削除できません）', ephemeral: true });
+        }
+        return;
+      }
+
+      // 既存の管理者権限チェック（setup-verify / setup-role など）
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '❌ このコマンドは管理者専用です。', ephemeral: true });
       }
@@ -310,7 +341,6 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
           await interaction.member.roles.add(role);
           await interaction.reply({ content: `🎉 **認証成功！** <@&${verifyRoleId}> ロールが付与されました。`, ephemeral: true });
-          // 認証完了時は指定ログチャンネルに通知を送る
           await sendLog(interaction.guild, interaction.member, '🔒 認証成功', `ユーザー: ${interaction.user.tag} (<@${interaction.user.id}>)`);
         } catch (err) {
           console.error('ロール付与エラー:', err);
@@ -352,7 +382,7 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.showModal(modal);
       }
 
-      // ロール切替ボタン（※ログ通知を出さない改修箇所）
+      // ロール切替ボタン
       if (interaction.customId.startsWith('toggle_role_')) {
         await interaction.deferReply({ ephemeral: true });
 
@@ -366,11 +396,9 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
           if (interaction.member.roles.cache.has(targetRoleId)) {
             await interaction.member.roles.remove(role);
-            // 本人のみに一時メッセージを返却（ログチャンネルへの sendLog は削除済み）
             await interaction.editReply({ content: `❌ **${role.name}** ロールを解除しました。` });
           } else {
             await interaction.member.roles.add(role);
-            // 本人のみに一時メッセージを返却（ログチャンネルへの sendLog は削除済み）
             await interaction.editReply({ content: `✅ **${role.name}** ロールが付与されました！` });
           }
         } catch (error) {
