@@ -390,7 +390,6 @@ function buildBirthdayAdminPanel(guild) {
 // ============================================================
 
 function startBirthdayChecker(c) {
-  // 1時間ごとにチェック、または日付が変わったタイミングなどを想定
   setInterval(async () => {
     const now = new Date();
     const month = now.getMonth() + 1;
@@ -409,7 +408,6 @@ function startBirthdayChecker(c) {
       const guildBirthdays = birthdayData[guildId] || {};
       for (const [userId, bday] of Object.entries(guildBirthdays)) {
         if (bday.month === month && bday.day === day) {
-          // すでに今年お祝い済みか確認するためのキー（年月日で判定）
           const todayKey = `${now.getFullYear()}-${month}-${day}`;
           if (bday.lastCelebrated === todayKey) continue;
 
@@ -425,7 +423,6 @@ function startBirthdayChecker(c) {
 
               await channel.send({ content: `<@${userId}>`, embeds: [embed] });
 
-              // 今日お祝いしたことを記録
               bday.lastCelebrated = todayKey;
               saveBirthdays();
             }
@@ -435,7 +432,7 @@ function startBirthdayChecker(c) {
         }
       }
     }
-  }, 1000 * 60 * 60); // 1時間おきにチェック
+  }, 1000 * 60 * 60);
 }
 
 
@@ -446,6 +443,23 @@ function startBirthdayChecker(c) {
 client.once(Events.ClientReady, async (c) => {
   console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
   
+  // 起動時にすでにVCにいるメンバーの時間を記録（初期化）
+  const now = Date.now();
+  for (const [guildId, guild] of c.guilds.cache) {
+    for (const [channelId, channel] of guild.channels.cache) {
+      if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
+        for (const [memberId, member] of channel.members) {
+          if (member.user.bot) continue;
+          const key = `${guildId}_${memberId}`;
+          if (!vcJoinTimes.has(key)) {
+            vcJoinTimes.set(key, now);
+          }
+        }
+      }
+    }
+  }
+  console.log('[VC監視] 起動時にVC参加中のメンバーを初期化しました。');
+
   const commands = [
     new SlashCommandBuilder()
       .setName('clear')
@@ -576,10 +590,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const month = interaction.options.getInteger('month');
         const day = interaction.options.getInteger('day');
 
-        // 簡単な日付チェック（例: 2月31日などの矛盾を防ぐ簡易チェック）
         const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         if (day > daysInMonth[month]) {
-          return interaction.reply({ content: `❌ ${month}月に ${day日} は存在しません。正しい日付を指定してください。`, ephemeral: true });
+          return interaction.reply({ content: `❌ ${month}月に ${day}日 は存在しません。正しい日付を指定してください。`, ephemeral: true });
         }
 
         if (!birthdayData[guild.id]) birthdayData[guild.id] = {};
@@ -742,7 +755,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
 
       if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-        await sendLog(guild, interaction.member, '⚠️️ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
+        await sendLog(guild, interaction.member, '⚠ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
         return interaction.reply({
           content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウント（サブ垢・新規垢）では認証できません。（あなたのアカウント作成から約 ${Math.floor(accountAgeDays)} 日経過）`,
           ephemeral: true
