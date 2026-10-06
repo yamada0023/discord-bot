@@ -1,6 +1,6 @@
 const http = require('http');
 
-// Webサーバーの起動 (Render等の常時起動用)
+// Webサーバーの起動 (Render等の常時起動・Keep-Alive用)
 http.createServer((req, res) => {
   res.write("Bot is alive!");
   res.end();
@@ -50,7 +50,7 @@ let roleIds = ['1537841157315231896']; // ロールパネル用ロールIDリス
 // 一時データ（認証コード保持）
 const activeCaptchas = new Map();
 
-// --- 便利関数: ログ送信 ---
+// --- ログ送信関数 ---
 async function sendLog(guild, member, title, description, color = 0x00FF00) {
   if (!userInfoChannelId) return;
   try {
@@ -70,7 +70,7 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
   }
 }
 
-// --- テキストコード生成 ---
+// --- 認証コード生成 ---
 function generateCaptchaCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let text = '';
@@ -110,7 +110,6 @@ function buildRolePanelComponents(guild) {
 }
 
 // --- 管理画面 Embed & コンポーネント生成 ---
-// 1. 認証 管理画面
 function buildVerifyAdminPanel() {
   const embed = new EmbedBuilder()
     .setTitle('⚙️ メンバー認証 管理ダッシュボード')
@@ -144,7 +143,6 @@ function buildVerifyAdminPanel() {
   return { embeds: [embed], components: [roleSelectRow, channelSelectRow, buttonRow] };
 }
 
-// 2. ロール付与 管理画面
 function buildRoleAdminPanel() {
   const roleDisplay = roleIds.map(id => `<@&${id}>`).join('\n') || '未設定';
 
@@ -193,11 +191,12 @@ client.on(Events.ClientReady, async () => {
     new SlashCommandBuilder().setName('role-panel').setDescription('ロール選択パネルを設置します')
   ].map(command => command.toJSON());
 
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  // ログイン済みの client.token を直接渡す（修正箇所）
+  const rest = new REST({ version: '10' }).setToken(client.token);
 
   try {
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('すべてのスラッシュコマンドの登録が完了しました！');
+    console.log('スラッシュコマンドの登録が完了しました！');
   } catch (error) {
     console.error('スラッシュコマンド登録エラー:', error);
   }
@@ -206,7 +205,7 @@ client.on(Events.ClientReady, async () => {
 // --- インタラクション処理 ---
 client.on(Events.InteractionCreate, async interaction => {
   try {
-    // --- スラッシュコマンド ---
+    // スラッシュコマンド
     if (interaction.isChatInputCommand()) {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '❌ このコマンドは管理者専用です。', ephemeral: true });
@@ -242,7 +241,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // --- ドロップダウンメニューの操作 ---
+    // ドロップダウンメニュー
     if (interaction.isRoleSelectMenu()) {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
@@ -278,7 +277,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // --- 管理パネル ボタン操作 ---
+    // 管理パネル ボタン操作
     if (interaction.isButton() && interaction.customId.startsWith('admin_')) {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
@@ -307,7 +306,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // --- モーダル送信処理 ---
+    // モーダル送信処理
     if (interaction.isModalSubmit() && interaction.customId === 'modal_submit_captcha') {
       const userAnswer = interaction.fields.getTextInputValue('input_captcha_answer').trim().toUpperCase();
       const correctAnswer = activeCaptchas.get(interaction.user.id);
@@ -332,7 +331,7 @@ client.on(Events.InteractionCreate, async interaction => {
           console.error('ロール付与エラー:', err);
           if (err.code === 50013) {
             await interaction.reply({ 
-              content: '❌ **ロールの付与に失敗しました（権限エラー）**\n\n【解決方法】\nDiscordの`サーバー設定` ＞ `ロール` で、**Botのロールを付与したいロールより「上」にドラッグ**してください！', 
+              content: '❌ **ロールの付与に失敗しました（権限順位エラー）**\n\n【解決方法】\nDiscordの`サーバー設定` ＞ `ロール` で、**Botのロールを付与したいロールより「上」に移動**させてください！', 
               ephemeral: true 
             });
           } else {
@@ -344,9 +343,8 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
 
-    // --- 一般ユーザー用ボタン操作 ---
+    // 一般ユーザー用ボタン操作
     if (interaction.isButton()) {
-      // 1. 認証ボタン押下
       if (interaction.customId === 'start_captcha_verify') {
         const code = generateCaptchaCode();
         activeCaptchas.set(interaction.user.id, code);
@@ -362,7 +360,6 @@ client.on(Events.InteractionCreate, async interaction => {
         });
       }
 
-      // 2. 回答入力モーダル呼び出し
       if (interaction.customId === 'open_captcha_modal') {
         const modal = new ModalBuilder().setCustomId('modal_submit_captcha').setTitle('メンバー認証');
         const input = new TextInputBuilder().setCustomId('input_captcha_answer').setLabel('表示された6桁の認証コード').setStyle(TextInputStyle.Short).setRequired(true);
@@ -370,9 +367,8 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.showModal(modal);
       }
 
-      // 3. ロール選択ボタン押下 (トロール切り替え)
+      // ロール切替ボタン
       if (interaction.customId.startsWith('toggle_role_')) {
-        // 処理保留応答（応答なしエラーを防ぐ）
         await interaction.deferReply({ ephemeral: true });
 
         const targetRoleId = interaction.customId.replace('toggle_role_', '');
@@ -396,7 +392,7 @@ client.on(Events.InteractionCreate, async interaction => {
           console.error('ロール操作エラー:', error);
           if (error.code === 50013) {
             await interaction.editReply({ 
-              content: `❌ **ロール「${role.name}」の操作に失敗しました（権限不足）**\n\n【解決手順】\n1. サーバー設定 ＞ ロール を開く\n2. **ボットのロール（まったりボット）を「${role.name}」より上の位置にドラッグ**して保存してください。` 
+              content: `❌ **ロール「${role.name}」の操作に失敗しました（権限順位エラー）**\n\n【解決手順】\n1. サーバー設定 ＞ ロール を開く\n2. **ボットのロールを「${role.name}」より上にドラッグ**して保存してください。` 
             });
           } else {
             await interaction.editReply({ content: '❌ ロールの操作に失敗しました。Botの権限を確認してください。' });
