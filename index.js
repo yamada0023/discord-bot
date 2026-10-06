@@ -638,3 +638,17 @@ function scheduleMemberRefresh(guild) {
 
   memberRefreshTimers.set(guild.id, timer);
 }
+
+// ============================================================
+// ボット起動時のイベント
+// ============================================================
+
+client.once(Events.ClientReady, async (c) => {
+  console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
+});
+
+// ============================================================
+// ログイン処理（Discordへの接続）
+// ============================================================
+
+client.login(process.env.DISCORD_TOKEN);
