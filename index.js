@@ -111,12 +111,7 @@ function defaultGuildSettings() {
     logChannelId: null,
     birthdayChannelId: null,
     readChannelId: null,
-    speakerId: 3,
-    // カウンター用チャンネルID設定（未設定時は名前にキーワードが含まれるものを自動検知または管理コマンドで設定）
-    statTotalChannelId: null,
-    statHumanChannelId: null,
-    statBotChannelId: null,
-    statVcChannelId: null
+    speakerId: 3 // ずんだもん (デフォルト)
   };
 }
 
@@ -171,14 +166,12 @@ const readingSessions = new Map();
 
 async function updateServerStats(guild) {
   try {
-    // メンバーキャッシュを最新化
     await guild.members.fetch();
 
     const totalMembers = guild.memberCount;
     const botCount = guild.members.cache.filter(m => m.user.bot).size;
     const humanCount = totalMembers - botCount;
 
-    // VCに参加しているユニークな人間（ボット除く）の数をカウント
     let vcHumanCount = 0;
     const countedUsers = new Set();
     for (const [channelId, channel] of guild.channels.cache) {
@@ -192,16 +185,127 @@ async function updateServerStats(guild) {
       }
     }
 
-    // チャンネル名から自動で探して更新する（「総メンバー数」「人間」「Bot」「VC参加中」という文字が含まれるボイスチャンネルを対象にする）
     for (const [channelId, channel] of guild.channels.cache) {
       if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
         const name = channel.name;
         if (name.includes('総メンバー数') || name.includes('総メンバー')) {
           await channel.setName(`総メンバー数: ${totalMembers}`).catch(() => {});
         } else if (name.includes('人間:')) {
-          await channel.setName(`人間: ${humanCount}`).catch(() => {});         } else if (name.includes('Bot:')) {           await channel.setName(`Bot: ${botCount}`).catch(() => {});
+          await channel.setName(`人間: ${humanCount}`).catch(() => {});
+        } else if (name.includes('Bot:')) {
+          await channel.setName(`Bot: ${botCount}`).catch(() => {});
         } else if (name.includes('VC参加中:')) {
-          await channel.setName(`VC参加中: ${vcHumanCount}`).catch(() => {});         }       }     }   } catch (error) {     console.error('サーバー統計チャンネル更新エラー:', error);   } }   // ============================================================ // 読み上げ音声キュー処理（高速化・非同期再生） // ============================================================  async function processQueue(guildId) {   const session = readingSessions.get(guildId);   if (!session \vert{}\vert{} session.isPlaying \vert{}\vert{} session.queue.length === 0) return;    session.isPlaying = true;   const textToRead = session.queue.shift();    try {     const settings = getGuildSettings(guildId);     const speaker = settings.speakerId \vert{}\vert{} 3;      const apiEndpoint = process.env.VOICEVOX_API_URL \vert{}\vert{} 'https://api.tts.quest/v3/voicevox/synthesis';     const params = new URLSearchParams({       speaker: speaker,       text: textToRead     });      const response = await fetch(`${apiEndpoint}?${params.toString()}`);     if (!response.ok) {       session.isPlaying = false;       processQueue(guildId);       return;     }      const data = await response.json();     const audioUrl = data.mp3StreamingUrl \vert{}\vert{} data.audioUrl;     if (!audioUrl) {       session.isPlaying = false;       processQueue(guildId);       return;     }      const resource = createAudioResource(audioUrl);     session.audioPlayer.play(resource);      session.audioPlayer.once(AudioPlayerStatus.Idle, () => {       session.isPlaying = false;       processQueue(guildId);     });    } catch (error) {     session.isPlaying = false;     processQueue(guildId);   } }   // ============================================================ // 認証ログ // ============================================================  async function sendLog(guild, member, title, description, color = 0x00FF00) {   const settings = getGuildSettings(guild.id);   const targetChannelId = settings.logChannelId \vert{}\vert{} userInfoChannelId;   if (!targetChannelId) return;    try {     const logChannel = guild.channels.cache.get(targetChannelId);     if (!logChannel) return;      const embed = new EmbedBuilder()       .setTitle(title)       .setColor(color)       .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))       .setDescription(description)       .setTimestamp();      await logChannel.send({ embeds: [embed] });   } catch (error) {     console.error('ログ送信失敗:', error);   } }   // ============================================================ // 認証コード＆画像生成 // ============================================================  function generateCaptchaCode() {   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   let text = '';   for (let i = 0; i < 6; i++) {     text += chars.charAt(Math.floor(Math.random() * chars.length));   }   return text; }  function createCaptchaImage(text) {   const canvas = createCanvas(300, 100);   const ctx = canvas.getContext('2d');    ctx.fillStyle = '#2f3136';   ctx.fillRect(0, 0, 300, 100);    for (let i = 0; i < 6; i++) {     ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255},${Math.random() * 255}, 0.5)`;
+          await channel.setName(`VC参加中: ${vcHumanCount}`).catch(() => {});
+        }
+      }
+    }
+  } catch (error) {
+    console.error('サーバー統計チャンネル更新エラー:', error);
+  }
+}
+
+
+// ============================================================
+// 読み上げ音声キュー処理（高速化・非同期再生）
+// ============================================================
+
+async function processQueue(guildId) {
+  const session = readingSessions.get(guildId);
+  if (!session || session.isPlaying || session.queue.length === 0) return;
+
+  session.isPlaying = true;
+  const textToRead = session.queue.shift();
+
+  try {
+    const settings = getGuildSettings(guildId);
+    const speaker = settings.speakerId || 3;
+
+    // 高速なVOICEVOX互換APIエンドポイントを利用（環境変数で上書き可能）
+    const apiEndpoint = process.env.VOICEVOX_API_URL || 'https://voicevox.su-shiki.com/su-shikiapis/synthesis';
+    const params = new URLSearchParams({
+      speaker: speaker,
+      text: textToRead
+    });
+
+    const response = await fetch(`${apiEndpoint}?${params.toString()}`);
+    if (!response.ok) {
+      session.isPlaying = false;
+      processQueue(guildId);
+      return;
+    }
+
+    const data = await response.json();
+    const audioUrl = data.mp3StreamingUrl || data.audioUrl;
+    if (!audioUrl) {
+      session.isPlaying = false;
+      processQueue(guildId);
+      return;
+    }
+
+    const resource = createAudioResource(audioUrl);
+    session.audioPlayer.play(resource);
+
+    session.audioPlayer.once(AudioPlayerStatus.Idle, () => {
+      session.isPlaying = false;
+      processQueue(guildId);
+    });
+
+  } catch (error) {
+    session.isPlaying = false;
+    processQueue(guildId);
+  }
+}
+
+
+// ============================================================
+// 認証ログ
+// ============================================================
+
+async function sendLog(guild, member, title, description, color = 0x00FF00) {
+  const settings = getGuildSettings(guild.id);
+  const targetChannelId = settings.logChannelId || userInfoChannelId;
+  if (!targetChannelId) return;
+
+  try {
+    const logChannel = guild.channels.cache.get(targetChannelId);
+    if (!logChannel) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setColor(color)
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+      .setDescription(description)
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] });
+  } catch (error) {
+    console.error('ログ送信失敗:', error);
+  }
+}
+
+
+// ============================================================
+// 認証コード＆画像生成
+// ============================================================
+
+function generateCaptchaCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let text = '';
+  for (let i = 0; i < 6; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return text;
+}
+
+function createCaptchaImage(text) {
+  const canvas = createCanvas(300, 100);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#2f3136';
+  ctx.fillRect(0, 0, 300, 100);
+
+  for (let i = 0; i < 6; i++) {
+    ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255},${Math.random() * 255}, 0.5)`;
     ctx.lineWidth = Math.random() * 3 + 1;
     ctx.beginPath();
     ctx.moveTo(Math.random() * 300, Math.random() * 100);
@@ -210,10 +314,47 @@ async function updateServerStats(guild) {
   }
 
   for (let i = 0; i < 100; i++) {
-    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;     ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);   }    ctx.font = 'bold 45px sans-serif';   ctx.textBaseline = 'middle';    for (let i = 0; i < text.length; i++) {     ctx.save();     const x = 35 + i * 40;     const y = 50 + (Math.random() * 20 - 10);     const angle = (Math.random() * 30 - 15) * Math.PI / 180;      ctx.translate(x, y);     ctx.rotate(angle);     ctx.fillStyle = '#ffffff';     ctx.fillText(text[i], 0, 0);     ctx.restore();   }    return canvas.toBuffer('image/png'); }   // ============================================================ // パネル生成用関数 // ============================================================  function buildRolePanelComponents(guild) {   const settings = getGuildSettings(guild.id);   const currentRoles = settings.roleIds \vert{}\vert{} roleIds;   const rows = [];   let currentRow = new ActionRowBuilder();    for (const roleId of currentRoles) {     const role = guild.roles.cache.get(roleId);     const labelName = role ? role.name : `未設定 (${roleId})`;
+    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;
+    ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);
+  }
+
+  ctx.font = 'bold 45px sans-serif';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 0; i < text.length; i++) {
+    ctx.save();
+    const x = 35 + i * 40;
+    const y = 50 + (Math.random() * 20 - 10);
+    const angle = (Math.random() * 30 - 15) * Math.PI / 180;
+
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text[i], 0, 0);
+    ctx.restore();
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+
+// ============================================================
+// パネル生成用関数
+// ============================================================
+
+function buildRolePanelComponents(guild) {
+  const settings = getGuildSettings(guild.id);
+  const currentRoles = settings.roleIds || roleIds;
+  const rows = [];
+  let currentRow = new ActionRowBuilder();
+
+  for (const roleId of currentRoles) {
+    const role = guild.roles.cache.get(roleId);
+    const labelName = role ? role.name : `未設定 (${roleId})`;
 
     const button = new ButtonBuilder()
-      .setCustomId(`toggle_role_${roleId}`)       .setLabel(`🏷️ ${labelName}`)
+      .setCustomId(`toggle_role_${roleId}`)
+      .setLabel(`🏷️ ${labelName}`)
       .setStyle(ButtonStyle.Primary);
 
     currentRow.addComponents(button);
@@ -239,11 +380,56 @@ function buildVerifyAdminPanel(guild) {
     .addFields(
       {
         name: '認証付与ロール',
-        value: settings.verifyRoleId ? `<@&${settings.verifyRoleId}>` : '未設定'       },       {         name: 'ログチャンネル',         value: (settings.logChannelId \vert{}\vert{} userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
+        value: settings.verifyRoleId ? `<@&${settings.verifyRoleId}>` : '未設定'
+      },
+      {
+        name: 'ログチャンネル',
+        value: (settings.logChannelId || userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
       },
       {
         name: 'サブ垢対策',
-        value: `アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウントをブロック`       }     );    const roleSelectRow = new ActionRowBuilder()     .addComponents(       new RoleSelectMenuBuilder()         .setCustomId('select_verify_role')         .setPlaceholder('付与するロールを選択してください')         .setMinValues(1)         .setMaxValues(1)     );    const channelSelectRow = new ActionRowBuilder()     .addComponents(       new ChannelSelectMenuBuilder()         .setCustomId('select_log_channel')         .setPlaceholder('ログ出力先のテキストチャンネルを選択')         .setChannelTypes(ChannelType.GuildText)         .setMinValues(1)         .setMaxValues(1)     );    const buttonRow = new ActionRowBuilder()     .addComponents(       new ButtonBuilder()         .setCustomId('admin_deploy_verify_panel')         .setLabel('ここに認証パネルを設置')         .setStyle(ButtonStyle.Success)     );    return {     embeds: [embed],     components: [roleSelectRow, channelSelectRow, buttonRow]   }; }  function buildRoleAdminPanel(guild) {   const settings = getGuildSettings(guild.id);   const currentRoles = settings.roleIds \vert{}\vert{} roleIds;   const roleDisplay = currentRoles.length > 0     ? currentRoles.map(id => `<@&${id}>`).join('\n')
+        value: `アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウントをブロック`
+      }
+    );
+
+  const roleSelectRow = new ActionRowBuilder()
+    .addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId('select_verify_role')
+        .setPlaceholder('付与するロールを選択してください')
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+  const channelSelectRow = new ActionRowBuilder()
+    .addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('select_log_channel')
+        .setPlaceholder('ログ出力先のテキストチャンネルを選択')
+        .setChannelTypes(ChannelType.GuildText)
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+  const buttonRow = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('admin_deploy_verify_panel')
+        .setLabel('ここに認証パネルを設置')
+        .setStyle(ButtonStyle.Success)
+    );
+
+  return {
+    embeds: [embed],
+    components: [roleSelectRow, channelSelectRow, buttonRow]
+  };
+}
+
+function buildRoleAdminPanel(guild) {
+  const settings = getGuildSettings(guild.id);
+  const currentRoles = settings.roleIds || roleIds;
+  const roleDisplay = currentRoles.length > 0
+    ? currentRoles.map(id => `<@&${id}>`).join('\n')
     : '未設定';
 
   const embed = new EmbedBuilder()
@@ -284,7 +470,50 @@ function buildBirthdayAdminPanel(guild) {
     .setColor(0x5865F2)
     .addFields({
       name: 'お祝いメッセージ送信チャンネル',
-      value: settings.birthdayChannelId ? `<#${settings.birthdayChannelId}>` : '未設定'     });    const channelSelectRow = new ActionRowBuilder()     .addComponents(       new ChannelSelectMenuBuilder()         .setCustomId('select_birthday_channel')         .setPlaceholder('お祝いメッセージを送るチャンネルを選択')         .setChannelTypes(ChannelType.GuildText)         .setMinValues(1)         .setMaxValues(1)     );    return {     embeds: [embed],     components: [channelSelectRow]   }; }   // ============================================================ // 毎日のお誕生日チェック処理 // ============================================================  function startBirthdayChecker(c) {   setInterval(async () => {     const now = new Date();     const month = now.getMonth() + 1;     const day = now.getDate();      for (const [guildId, guildSettingsMap] of Object.entries(botSettings)) {       const birthdayChannelId = guildSettingsMap.birthdayChannelId;       if (!birthdayChannelId) continue;        const guild = c.guilds.cache.get(guildId);       if (!guild) continue;        const channel = guild.channels.cache.get(birthdayChannelId);       if (!channel) continue;        const guildBirthdays = birthdayData[guildId] \vert{}\vert{} {};       for (const [userId, bday] of Object.entries(guildBirthdays)) {         if (bday.month === month && bday.day === day) {           const todayKey = `${now.getFullYear()}-${month}-${day}`;
+      value: settings.birthdayChannelId ? `<#${settings.birthdayChannelId}>` : '未設定'
+    });
+
+  const channelSelectRow = new ActionRowBuilder()
+    .addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('select_birthday_channel')
+        .setPlaceholder('お祝いメッセージを送るチャンネルを選択')
+        .setChannelTypes(ChannelType.GuildText)
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+  return {
+    embeds: [embed],
+    components: [channelSelectRow]
+  };
+}
+
+
+// ============================================================
+// 毎日のお誕生日チェック処理
+// ============================================================
+
+function startBirthdayChecker(c) {
+  setInterval(async () => {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+
+    for (const [guildId, guildSettingsMap] of Object.entries(botSettings)) {
+      const birthdayChannelId = guildSettingsMap.birthdayChannelId;
+      if (!birthdayChannelId) continue;
+
+      const guild = c.guilds.cache.get(guildId);
+      if (!guild) continue;
+
+      const channel = guild.channels.cache.get(birthdayChannelId);
+      if (!channel) continue;
+
+      const guildBirthdays = birthdayData[guildId] || {};
+      for (const [userId, bday] of Object.entries(guildBirthdays)) {
+        if (bday.month === month && bday.day === day) {
+          const todayKey = `${now.getFullYear()}-${month}-${day}`;
           if (bday.lastCelebrated === todayKey) continue;
 
           try {
@@ -292,7 +521,12 @@ function buildBirthdayAdminPanel(guild) {
             if (member) {
               const embed = new EmbedBuilder()
                 .setTitle('🎉 お誕生日おめでとうございます！ 🎂')
-                .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)                 .setColor(0xFF73FA)                 .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))                 .setTimestamp();                await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+                .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)
+                .setColor(0xFF73FA)
+                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                .setTimestamp();
+
+              await channel.send({ content: `<@${userId}>`, embeds: [embed] });
 
               bday.lastCelebrated = todayKey;
               saveBirthdays();
@@ -312,11 +546,191 @@ function buildBirthdayAdminPanel(guild) {
 // ============================================================
 
 client.once(Events.ClientReady, async (c) => {
-  console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);      for (const [guildId, guild] of c.guilds.cache) {     try {       await guild.members.fetch();       console.log(`[キャッシュ] ${guild.name} のメンバーを取得しました。`);
-      // 起動時に人数カウンターを即座に更新
+  console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
+  
+  for (const [guildId, guild] of c.guilds.cache) {
+    try {
+      await guild.members.fetch();
+      console.log(`[キャッシュ] ${guild.name} のメンバーを取得しました。`);
       await updateServerStats(guild);
     } catch (err) {
-      console.error(`[キャッシュエラー] ${guild.name} のメンバー取得に失敗しました:`, err);     }   }    const now = Date.now();   for (const [guildId, guild] of c.guilds.cache) {     for (const [channelId, channel] of guild.channels.cache) {       if (channel.type === ChannelType.GuildVoice \vert{}\vert{} channel.type === ChannelType.GuildStageVoice) {         for (const [memberId, member] of channel.members) {           if (member.user.bot) continue;           const key = `${guildId}_${memberId}`;           if (!vcJoinTimes.has(key)) {             vcJoinTimes.set(key, now);           }         }       }     }   }   console.log('[VC監視] 起動時にVC参加中のメンバーを初期化しました。');    const commands = [     new SlashCommandBuilder()       .setName('clear')       .setDescription('指定した件数のメッセージを一括削除します（管理者限定）')       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)       .addIntegerOption(option =>         option.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100)       ),     new SlashCommandBuilder()       .setName('setup-role')       .setDescription('ロール付与パネルの設定管理画面を表示します（管理者限定）')       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),     new SlashCommandBuilder()       .setName('setup-verify')       .setDescription('認証の設定管理画面を表示します（管理者限定）')       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),     new SlashCommandBuilder()       .setName('setup-birthday')       .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),     new SlashCommandBuilder()       .setName('vc-time')       .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),     new SlashCommandBuilder()       .setName('birthday')       .setDescription('自分の誕生日を登録したり確認します')       .addSubcommand(sub =>         sub.setName('set')           .setDescription('誕生日を登録します')           .addIntegerOption(o => o.setName('month').setDescription('誕生月の数字 (1〜12)').setRequired(true).setMinValue(1).setMaxValue(12))           .addIntegerOption(o => o.setName('day').setDescription('誕生日の数字 (1〜31)').setRequired(true).setMinValue(1).setMaxValue(31))       )       .addSubcommand(sub =>         sub.setName('show')           .setDescription('登録されている誕生日を確認します')           .addUserOption(o => o.setName('user').setDescription('確認したいユーザー（省略時は自分）').setRequired(false))       ),     new SlashCommandBuilder()       .setName('join')       .setDescription('ボットを指定したボイスチャンネルに参加させます')       .addChannelOption(option =>         option.setName('channel')           .setDescription('参加させたいボイスチャンネル（省略時はあなたがいるVC）')           .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)           .setRequired(false)       ),     new SlashCommandBuilder()       .setName('leave')       .setDescription('ボットをボイスチャンネルから退出させます'),     new SlashCommandBuilder()       .setName('read')       .setDescription('このチャンネルの高速音声読み上げを開始します')       .addChannelOption(option =>         option.setName('voice_channel')           .setDescription('読み上げを行うボイスチャンネル（省略時はあなたがいるVC）')           .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)           .setRequired(false)       ),     new SlashCommandBuilder()       .setName('stop')       .setDescription('読み上げを停止し、ボットをVCから退出させます')   ];    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);   try {     await rest.put(Routes.applicationCommands(c.user.id), { body: commands });     console.log('[スラッシュコマンド] 登録が完了しました。');   } catch (error) {     console.error('[スラッシュコマンド] 登録エラー:', error);   }    startBirthdayChecker(c); });   // ============================================================ // イベント: メンバーの参加・退出時にカウンターを更新 // ============================================================  client.on(Events.GuildMemberAdd, (member) => {   updateServerStats(member.guild); });  client.on(Events.GuildMemberRemove, (member) => {   updateServerStats(member.guild); });   // ============================================================ // イベント: ボイスチャンネル入退室の監視（滞在時間＆VC参加中カウンター更新） // ============================================================  client.on(Events.VoiceStateUpdate, (oldState, newState) => {   if (newState.member?.user.bot) return;    const userId = newState.member.id;   const guildId = newState.guild.id;   const key = `${guildId}_${userId}`;   const now = Date.now();    if (!oldState.channelId && newState.channelId) {     vcJoinTimes.set(key, now);   }   else if (oldState.channelId && !newState.channelId) {     vcJoinTimes.delete(key);   }    // VC人数カウンターを更新   updateServerStats(newState.guild); });   // ============================================================ // イベント: メッセージ受信（非同期＆高速キュー読み上げ） // ============================================================  client.on(Events.MessageCreate, async (message) => {   if (message.author.bot \vert{}\vert{} !message.guild) return;    const session = readingSessions.get(message.guild.id);   if (!session) return;    if (session.textChannelId && message.channel.id !== session.textChannelId) return;    let textToRead = message.content     .replace(/https?:\/['\S]+/g, 'リンク')     .replace(/<@!?&?\d+>/g, 'さん');    if (!textToRead) return;   if (textToRead.length > 100) {     textToRead = textToRead.substring(0, 100) + '、以下略';   }    session.queue.push(textToRead);   processQueue(message.guild.id); });   // ============================================================ // イベント: インタラクション処理 // ============================================================  client.on(Events.InteractionCreate, async (interaction) => {   const guild = interaction.guild;   if (!guild) return;    if (interaction.isChatInputCommand()) {     const { commandName } = interaction;      if (commandName === 'clear') {       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {         return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });       }       const count = interaction.options.getInteger('count');       await interaction.deferReply({ ephemeral: true });       try {         const deleted = await interaction.channel.bulkDelete(count, true);         await interaction.editReply({ content: `${deleted.size} 件のメッセージを削除しました。` });
+      console.error(`[キャッシュエラー] ${guild.name} のメンバー取得に失敗しました:`, err);
+    }
+  }
+
+  const now = Date.now();
+  for (const [guildId, guild] of c.guilds.cache) {
+    for (const [channelId, channel] of guild.channels.cache) {
+      if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
+        for (const [memberId, member] of channel.members) {
+          if (member.user.bot) continue;
+          const key = `${guildId}_${memberId}`;
+          if (!vcJoinTimes.has(key)) {
+            vcJoinTimes.set(key, now);
+          }
+        }
+      }
+    }
+  }
+  console.log('[VC監視] 起動時にVC参加中のメンバーを初期化しました。');
+
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('指定した件数のメッセージを一括削除します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addIntegerOption(option =>
+        option.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100)
+      ),
+    new SlashCommandBuilder()
+      .setName('setup-role')
+      .setDescription('ロール付与パネルの設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('setup-verify')
+      .setDescription('認証の設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('setup-birthday')
+      .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('vc-time')
+      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),
+    new SlashCommandBuilder()
+      .setName('birthday')
+      .setDescription('自分の誕生日を登録したり確認します')
+      .addSubcommand(sub =>
+        sub.setName('set')
+          .setDescription('誕生日を登録します')
+          .addIntegerOption(o => o.setName('month').setDescription('誕生月の数字 (1〜12)').setRequired(true).setMinValue(1).setMaxValue(12))
+          .addIntegerOption(o => o.setName('day').setDescription('誕生日の数字 (1〜31)').setRequired(true).setMinValue(1).setMaxValue(31))
+      )
+      .addSubcommand(sub =>
+        sub.setName('show')
+          .setDescription('登録されている誕生日を確認します')
+          .addUserOption(o => o.setName('user').setDescription('確認したいユーザー（省略時は自分）').setRequired(false))
+      ),
+    new SlashCommandBuilder()
+      .setName('join')
+      .setDescription('ボットを指定したボイスチャンネルに参加させます')
+      .addChannelOption(option =>
+        option.setName('channel')
+          .setDescription('参加させたいボイスチャンネル（省略時はあなたがいるVC）')
+          .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('leave')
+      .setDescription('ボットをボイスチャンネルから退出させます'),
+    new SlashCommandBuilder()
+      .setName('read')
+      .setDescription('このチャンネルの高速音声読み上げを開始します')
+      .addChannelOption(option =>
+        option.setName('voice_channel')
+          .setDescription('読み上げを行うボイスチャンネル（省略時はあなたがいるVC）')
+          .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('stop')
+      .setDescription('読み上げを停止し、ボットをVCから退出させます')
+  ];
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
+    console.log('[スラッシュコマンド] 登録が完了しました。');
+  } catch (error) {
+    console.error('[スラッシュコマンド] 登録エラー:', error);
+  }
+
+  startBirthdayChecker(c);
+});
+
+
+// ============================================================
+// イベント: メンバーの参加・退出時にカウンターを更新
+// ============================================================
+
+client.on(Events.GuildMemberAdd, (member) => {
+  updateServerStats(member.guild);
+});
+
+client.on(Events.GuildMemberRemove, (member) => {
+  updateServerStats(member.guild);
+});
+
+
+// ============================================================
+// イベント: ボイスチャンネル入退室の監視（滞在時間＆VC参加中カウンター更新）
+// ============================================================
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  if (newState.member?.user.bot) return;
+
+  const userId = newState.member.id;
+  const guildId = newState.guild.id;
+  const key = `${guildId}_${userId}`;
+  const now = Date.now();
+
+  if (!oldState.channelId && newState.channelId) {
+    vcJoinTimes.set(key, now);
+  }
+  else if (oldState.channelId && !newState.channelId) {
+    vcJoinTimes.delete(key);
+  }
+
+  updateServerStats(newState.guild);
+});
+
+
+// ============================================================
+// イベント: メッセージ受信（非同期＆高速キュー読み上げ）
+// ============================================================
+
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot || !message.guild) return;
+
+  const session = readingSessions.get(message.guild.id);
+  if (!session) return;
+
+  if (session.textChannelId && message.channel.id !== session.textChannelId) return;
+
+  let textToRead = message.content
+    .replace(/https?:\/['\S]+/g, 'リンク')
+    .replace(/<@!?&?\d+>/g, 'さん');
+
+  if (!textToRead) return;
+  if (textToRead.length > 100) {
+    textToRead = textToRead.substring(0, 100) + '、以下略';
+  }
+
+  session.queue.push(textToRead);
+  processQueue(message.guild.id);
+});
+
+
+// ============================================================
+// イベント: インタラクション処理
+// ============================================================
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  const guild = interaction.guild;
+  if (!guild) return;
+
+  if (interaction.isChatInputCommand()) {
+    const { commandName } = interaction;
+
+    if (commandName === 'clear') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
+      }
+      const count = interaction.options.getInteger('count');
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const deleted = await interaction.channel.bulkDelete(count, true);
+        await interaction.editReply({ content: `${deleted.size} 件のメッセージを削除しました。` });
       } catch (error) {
         await interaction.editReply({ content: 'メッセージの削除に失敗しました。' });
       }
@@ -395,8 +809,18 @@ client.once(Events.ClientReady, async (c) => {
           let memberLines = [];
 
           for (const [memberId, member] of humanMembers) {
-            const key = `${guild.id}_${memberId}`;             let joinTime = vcJoinTimes.get(key) \vert{}\vert{} now;             const diffMs = now - joinTime;             const totalSeconds = Math.floor(diffMs / 1000);             const hours = Math.floor(totalSeconds / 3600);             const minutes = Math.floor((totalSeconds \% 3600) / 60);             const seconds = totalSeconds \% 60;              let timeString = '';             if (hours > 0) timeString += `${hours}時間 `;
-            if (minutes > 0 || hours > 0) timeString += `${minutes}分 `;             timeString += `${seconds}秒`;
+            const key = `${guild.id}_${memberId}`;
+            let joinTime = vcJoinTimes.get(key) || now;
+            const diffMs = now - joinTime;
+            const totalSeconds = Math.floor(diffMs / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+
+            let timeString = '';
+            if (hours > 0) timeString += `${hours}時間 `;
+            if (minutes > 0 || hours > 0) timeString += `${minutes}分 `;
+            timeString += `${seconds}秒`;
 
             memberLines.push(`• **${member.displayName}** : ⏱️ \`${timeString}\``);
           }
@@ -636,7 +1060,7 @@ client.once(Events.ClientReady, async (c) => {
           await interaction.reply({ content: '⚠️ ロールの付与に失敗しました。', ephemeral: true });
         }
       } else {
-        await interaction.reply({ content: '✅ 1認証に成功しました！', ephemeral: true });
+        await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
       }
     }
   }
