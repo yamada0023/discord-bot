@@ -346,25 +346,22 @@ client.once(Events.ClientReady, async (c) => {
   const commands = [
     new SlashCommandBuilder()
       .setName('clear')
-      .setDescription('指定した件数のメッセージを一括削除します')
+      .setDescription('指定した件数のメッセージを一括削除します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
       .addIntegerOption(option =>
         option.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100)
       ),
     new SlashCommandBuilder()
-      .setName('role-panel')
-      .setDescription('ロール選択パネルを設置します'),
-    new SlashCommandBuilder()
       .setName('setup-role')
-      .setDescription('ロール付与パネルの設定管理画面を表示します'),
+      .setDescription('ロール付与パネルの設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('setup-verify')
-      .setDescription('認証の設定管理画面を表示します'),
-    new SlashCommandBuilder()
-      .setName('verify')
-      .setDescription('認証パネルを設置します'),
+      .setDescription('認証の設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('vc-time')
-      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します')
+      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）')
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -389,11 +386,9 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   const key = `${guildId}_${userId}`;
   const now = Date.now();
 
-  // VCに入室（またはチャンネル移動）した場合
   if (!oldState.channelId && newState.channelId) {
     vcJoinTimes.set(key, now);
   }
-  // VCを完全に退出した場合
   else if (oldState.channelId && !newState.channelId) {
     vcJoinTimes.delete(key);
   }
@@ -413,7 +408,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'clear') {
-      if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
       }
       const count = interaction.options.getInteger('count');
@@ -442,17 +437,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
     }
 
-    else if (commandName === 'verify' || commandName === 'role-panel') {
-      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
-      }
-      await interaction.reply({ content: '管理ダッシュボードの「ここに設置」ボタンをご利用ください。', ephemeral: true });
-    }
-
     else if (commandName === 'vc-time') {
       await interaction.deferReply();
 
-      // サーバー内のすべてのボイスチャンネルを取得
       const voiceChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice);
       
       const embed = new EmbedBuilder()
@@ -464,7 +451,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const now = Date.now();
 
       for (const [channelId, channel] of voiceChannels) {
-        // ボットを除外したメンバーだけにする
         const humanMembers = channel.members.filter(m => !m.user.bot);
 
         if (humanMembers.size > 0) {
@@ -475,7 +461,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const key = `${guild.id}_${memberId}`;
             let joinTime = vcJoinTimes.get(key);
 
-            // ボット起動前に既に入っていた等で記録がない場合は、現在の時刻を仮の入室時間とする
             if (!joinTime) {
               joinTime = now;
               vcJoinTimes.set(key, now);
@@ -513,6 +498,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // 2. セレクトメニュー
   else if (interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) {
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+    }
+
     const settings = getGuildSettings(guild.id);
 
     if (interaction.customId === 'select_verify_role') {
@@ -537,6 +526,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // 3. ボタン操作
   else if (interaction.isButton()) {
     if (interaction.customId === 'admin_deploy_verify_panel') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+
       const embed = new EmbedBuilder()
         .setTitle('🔒 メンバー認証')
         .setDescription('下の「認証する」ボタンを押して、画像認証を行ってください。\n※作成から日数の浅いアカウント（サブ垢等）は認証できません。')
@@ -551,6 +544,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     else if (interaction.customId === 'admin_deploy_role_panel') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+
       const components = buildRolePanelComponents(guild);
       const embed = new EmbedBuilder()
         .setTitle('🏷️ ロール選択パネル')
@@ -648,7 +645,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が画像認証をクリアしました。`);
         } catch (e) {
           console.error('認証ロール付与失敗:', e);
-          await interaction.reply({ content: '⚠️️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
+          await interaction.reply({ content: '⚠️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
         }
       } else {
         await interaction.reply({ content: '✅ 認証に成功しました！（付与ロールが未設定です）', ephemeral: true });
