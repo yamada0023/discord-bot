@@ -81,6 +81,7 @@ const MIN_ACCOUNT_AGE_DAYS = 7;
 // ============================================================
 const DATA_DIR = path.join(__dirname, 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'bot-settings.json');
+const BIRTHDAYS_FILE = path.join(DATA_DIR, 'birthdays.json');
 
 function loadSettings() {
   try {
@@ -101,7 +102,8 @@ function defaultGuildSettings() {
     verifyRoleId: '1537841157315231896',
     userInfoChannelId: null,
     roleIds: ['1537841157315231896'],
-    logChannelId: null
+    logChannelId: null,
+    birthdayChannelId: null // 誕生日のお祝いメッセージを送るチャンネル
   };
 }
 
@@ -119,13 +121,34 @@ function saveSettings() {
   }
 }
 
+// 誕生日データの読み書き
+function loadBirthdays() {
+  try {
+    if (!fs.existsSync(BIRTHDAYS_FILE)) return {};
+    const raw = fs.readFileSync(BIRTHDAYS_FILE, 'utf8');
+    return JSON.parse(raw || '{}');
+  } catch (error) {
+    console.error('[誕生日] 読み込みエラー:', error);
+    return {};
+  }
+}
+
+const birthdayData = loadBirthdays();
+
+function saveBirthdays() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(BIRTHDAYS_FILE, JSON.stringify(birthdayData, null, 2), 'utf8');
+  } catch (error) {
+    console.error('[誕生日] 保存エラー:', error);
+  }
+}
+
 
 // ============================================================
 // 各種キャッシュ・マップ
 // ============================================================
 const activeCaptchas = new Map();
-
-// VC入室時間を管理するマップ: key = `${guildId}_${userId}`, value = 入室タイムスタンプ (ms)
 const vcJoinTimes = new Map();
 
 
@@ -335,6 +358,86 @@ function buildRoleAdminPanel(guild) {
   };
 }
 
+function buildBirthdayAdminPanel(guild) {
+  const settings = getGuildSettings(guild.id);
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ お誕生日お祝い機能 管理ダッシュボード')
+    .setColor(0x5865F2)
+    .addFields({
+      name: 'お祝いメッセージ送信チャンネル',
+      value: settings.birthdayChannelId ? `<#${settings.birthdayChannelId}>` : '未設定'
+    });
+
+  const channelSelectRow = new ActionRowBuilder()
+    .addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('select_birthday_channel')
+        .setPlaceholder('お祝いメッセージを送るチャンネルを選択')
+        .setChannelTypes(ChannelType.GuildText)
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+  return {
+    embeds: [embed],
+    components: [channelSelectRow]
+  };
+}
+
+
+// ============================================================
+// 毎日のお誕生日チェック処理
+// ============================================================
+
+function startBirthdayChecker(c) {
+  // 1時間ごとにチェック、または日付が変わったタイミングなどを想定
+  setInterval(async () => {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+
+    for (const [guildId, guildSettingsMap] of Object.entries(botSettings)) {
+      const birthdayChannelId = guildSettingsMap.birthdayChannelId;
+      if (!birthdayChannelId) continue;
+
+      const guild = c.guilds.cache.get(guildId);
+      if (!guild) continue;
+
+      const channel = guild.channels.cache.get(birthdayChannelId);
+      if (!channel) continue;
+
+      const guildBirthdays = birthdayData[guildId] || {};
+      for (const [userId, bday] of Object.entries(guildBirthdays)) {
+        if (bday.month === month && bday.day === day) {
+          // すでに今年お祝い済みか確認するためのキー（年月日で判定）
+          const todayKey = `${now.getFullYear()}-${month}-${day}`;
+          if (bday.lastCelebrated === todayKey) continue;
+
+          try {
+            const member = await guild.members.fetch(userId).catch(() => null);
+            if (member) {
+              const embed = new EmbedBuilder()
+                .setTitle('🎉 お誕生日おめでとうございます！ 🎂')
+                .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)
+                .setColor(0xFF73FA)
+                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                .setTimestamp();
+
+              await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+
+              // 今日お祝いしたことを記録
+              bday.lastCelebrated = todayKey;
+              saveBirthdays();
+            }
+          } catch (err) {
+            console.error('誕生日お祝いメッセージ送信エラー:', err);
+          }
+        }
+      }
+    }
+  }, 1000 * 60 * 60); // 1時間おきにチェック
+}
+
 
 // ============================================================
 // イベント: 準備完了
@@ -360,8 +463,26 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('認証の設定管理画面を表示します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+      .setName('setup-birthday')
+      .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
       .setName('vc-time')
-      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）')
+      .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),
+    new SlashCommandBuilder()
+      .setName('birthday')
+      .setDescription('自分の誕生日を登録したり確認します')
+      .addSubcommand(sub =>
+        sub.setName('set')
+          .setDescription('誕生日を登録します')
+          .addIntegerOption(o => o.setName('month').setDescription('誕生月の数字 (1〜12)').setRequired(true).setMinValue(1).setMaxValue(12))
+          .addIntegerOption(o => o.setName('day').setDescription('誕生日の数字 (1〜31)').setRequired(true).setMinValue(1).setMaxValue(31))
+      )
+      .addSubcommand(sub =>
+        sub.setName('show')
+          .setDescription('登録されている誕生日を確認します')
+          .addUserOption(o => o.setName('user').setDescription('確認したいユーザー（省略時は自分）').setRequired(false))
+      )
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -371,6 +492,9 @@ client.once(Events.ClientReady, async (c) => {
   } catch (error) {
     console.error('[スラッシュコマンド] 登録エラー:', error);
   }
+
+  // 誕生日チェッカー起動
+  startBirthdayChecker(c);
 });
 
 
@@ -379,7 +503,7 @@ client.once(Events.ClientReady, async (c) => {
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-  if (newState.member?.user.bot) return; // ボットは除外
+  if (newState.member?.user.bot) return;
 
   const userId = newState.member.id;
   const guildId = newState.guild.id;
@@ -435,6 +559,53 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       const panel = buildRoleAdminPanel(guild);
       await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'setup-birthday') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+      const panel = buildBirthdayAdminPanel(guild);
+      await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'birthday') {
+      const subcommand = interaction.options.getSubcommand();
+
+      if (subcommand === 'set') {
+        const month = interaction.options.getInteger('month');
+        const day = interaction.options.getInteger('day');
+
+        // 簡単な日付チェック（例: 2月31日などの矛盾を防ぐ簡易チェック）
+        const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        if (day > daysInMonth[month]) {
+          return interaction.reply({ content: `❌ ${month}月に ${day日} は存在しません。正しい日付を指定してください。`, ephemeral: true });
+        }
+
+        if (!birthdayData[guild.id]) birthdayData[guild.id] = {};
+        birthdayData[guild.id][interaction.user.id] = {
+          month,
+          day,
+          lastCelebrated: null
+        };
+        saveBirthdays();
+
+        await interaction.reply({ content: `🎂 あなたの誕生日を **${month}月${day}日** に登録しました！`, ephemeral: true });
+      } 
+      else if (subcommand === 'show') {
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const guildBdays = birthdayData[guild.id] || {};
+        const bday = guildBdays[targetUser.id];
+
+        if (!bday) {
+          const msg = targetUser.id === interaction.user.id 
+            ? 'あなたの誕生日はまだ登録されていません。`/birthday set` で登録してください！' 
+            : `${targetUser.tag} の誕生日は登録されていません。`;
+          return interaction.reply({ content: msg, ephemeral: true });
+        }
+
+        await interaction.reply({ content: `📅 **${targetUser.tag}** さんのお誕生日：**${bday.month}月${bday.day}日**`, ephemeral: true });
+      }
     }
 
     else if (commandName === 'vc-time') {
@@ -521,6 +692,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       saveSettings();
       await interaction.update(buildRoleAdminPanel(guild));
     }
+
+    else if (interaction.customId === 'select_birthday_channel') {
+      settings.birthdayChannelId = interaction.values[0];
+      saveSettings();
+      await interaction.update(buildBirthdayAdminPanel(guild));
+    }
   }
 
   // 3. ボタン操作
@@ -565,7 +742,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
 
       if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-        await sendLog(guild, interaction.member, '⚠️ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
+        await sendLog(guild, interaction.member, '⚠️️ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
         return interaction.reply({
           content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウント（サブ垢・新規垢）では認証できません。（あなたのアカウント作成から約 ${Math.floor(accountAgeDays)} 日経過）`,
           ephemeral: true
