@@ -70,6 +70,9 @@ let roleIds = [
   '1537841157315231896'
 ];
 
+// サブ垢対策：作成から何日未満のアカウントを弾くか（例: 7日）
+const MIN_ACCOUNT_AGE_DAYS = 7;
+
 // ============================================================
 // 永続設定（サーバーごと）
 // ============================================================
@@ -113,23 +116,6 @@ function saveSettings() {
   }
 }
 
-function applyGuildSettings(guild) {
-  const settings = getGuildSettings(guild.id);
-  verifyRoleId = settings.verifyRoleId || verifyRoleId;
-  userInfoChannelId = settings.userInfoChannelId || null;
-  roleIds = Array.isArray(settings.roleIds) && settings.roleIds.length
-    ? settings.roleIds
-    : roleIds;
-  return settings;
-}
-
-function saveCurrentGuildSettings(guild) {
-  const settings = getGuildSettings(guild.id);
-  settings.verifyRoleId = verifyRoleId;
-  settings.userInfoChannelId = userInfoChannelId;
-  settings.roleIds = roleIds;
-  saveSettings();
-}
 
 // ============================================================
 // 各種キャッシュ・マップ
@@ -137,8 +123,6 @@ function saveCurrentGuildSettings(guild) {
 const activeCaptchas = new Map();
 const statsChannels = new Map();
 const memberStatsCache = new Map();
-const statsUpdateTimers = new Map();
-const memberRefreshTimers = new Map();
 
 
 // ============================================================
@@ -229,6 +213,10 @@ function buildVerifyAdminPanel(guild) {
       {
         name: 'ログチャンネル',
         value: (settings.logChannelId || userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
+      },
+      {
+        name: 'サブ垢対策',
+        value: `アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウントをブロック`
       }
     );
 
@@ -305,101 +293,12 @@ function buildRoleAdminPanel(guild) {
 
 
 // ============================================================
-// 統計関連関数
-// ============================================================
-
-async function refreshMemberStats(guild) {
-  try {
-    const members = await guild.members.fetch();
-    let humanCount = 0;
-    let botCount = 0;
-
-    for (const member of members.values()) {
-      if (member.user.bot) botCount++;
-      else humanCount++;
-    }
-
-    const totalMembers = Math.max(members.size, guild.memberCount || 0);
-    const result = { totalMembers, humanCount, botCount };
-    memberStatsCache.set(guild.id, result);
-    return result;
-  } catch (error) {
-    console.error(`[統計取得] エラー (${guild.name}):`, error);
-    return memberStatsCache.get(guild.id) || {
-      totalMembers: guild.memberCount || 0,
-      humanCount: 0,
-      botCount: 0
-    };
-  }
-}
-
-async function getServerStats(guild) {
-  const cached = memberStatsCache.get(guild.id);
-  const totalMembers = cached ? cached.totalMembers : guild.memberCount;
-  const humanCount = cached ? cached.humanCount : guild.members.cache.filter(m => !m.user.bot).size;
-  const botCount = cached ? cached.botCount : guild.members.cache.filter(m => m.user.bot).size;
-  const voiceCount = guild.members.cache.filter(member => member.voice && member.voice.channel).size;
-
-  return { totalMembers, humanCount, botCount, voiceCount };
-}
-
-async function updateStatsChannels(guild) {
-  try {
-    if (!guild) return;
-    const stats = await getServerStats(guild);
-    let channelIds = statsChannels.get(guild.id);
-
-    if (!channelIds) {
-      const channels = guild.channels.cache;
-      const totalChannel = channels.find(c => c.type === ChannelType.GuildVoice && c.name.startsWith('📊 総メンバー数'));
-      const humanChannel = channels.find(c => c.type === ChannelType.GuildVoice && c.name.startsWith('📊 人間'));
-      const botChannel = channels.find(c => c.type === ChannelType.GuildVoice && c.name.startsWith('📊 Bot'));
-      const voiceChannel = channels.find(c => c.type === ChannelType.GuildVoice && c.name.startsWith('📊 VC参加中'));
-
-      if (totalChannel && humanChannel && botChannel && voiceChannel) {
-        channelIds = {
-          total: totalChannel.id,
-          human: humanChannel.id,
-          bot: botChannel.id,
-          voice: voiceChannel.id
-        };
-        statsChannels.set(guild.id, channelIds);
-      } else {
-        return;
-      }
-    }
-
-    const totalChannel = guild.channels.cache.get(channelIds.total);
-    const humanChannel = guild.channels.cache.get(channelIds.human);
-    const botChannel = guild.channels.cache.get(channelIds.bot);
-    const voiceChannel = guild.channels.cache.get(channelIds.voice);
-
-    if (totalChannel && totalChannel.name !== `📊 総メンバー数: ${stats.totalMembers}`) {
-      await totalChannel.setName(`📊 総メンバー数: ${stats.totalMembers}`);
-    }
-    if (humanChannel && humanChannel.name !== `📊 人間: ${stats.humanCount}`) {
-      await humanChannel.setName(`📊 人間: ${stats.humanCount}`);
-    }
-    if (botChannel && botChannel.name !== `📊 Bot: ${stats.botCount}`) {
-      await botChannel.setName(`📊 Bot: ${stats.botCount}`);
-    }
-    if (voiceChannel && voiceChannel.name !== `📊 VC参加中: ${stats.voiceCount}`) {
-      await voiceChannel.setName(`📊 VC参加中: ${stats.voiceCount}`);
-    }
-  } catch (error) {
-    console.error(`[統計VC] 更新エラー (${guild.name}):`, error);
-  }
-}
-
-
-// ============================================================
 // イベント: 準備完了
 // ============================================================
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
   
-  // スラッシュコマンドの登録
   const commands = [
     new SlashCommandBuilder()
       .setName('clear')
@@ -432,7 +331,7 @@ client.once(Events.ClientReady, async (c) => {
 
 
 // ============================================================
-// イベント: インタラクション処理（コマンド・ボタン・メニュー）
+// イベント: インタラクション処理
 // ============================================================
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -477,7 +376,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
       }
-      await interaction.reply({ content: 'ダッシュボードの「ここに設置」ボタンまたは個別の設定コマンドをご利用ください。', ephemeral: true });
+      await interaction.reply({ content: '管理ダッシュボードの「ここに設置」ボタンをご利用ください。', ephemeral: true });
     }
   }
 
@@ -486,24 +385,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const settings = getGuildSettings(guild.id);
 
     if (interaction.customId === 'select_verify_role') {
-      const selectedRoleId = interaction.values[0];
-      settings.verifyRoleId = selectedRoleId;
-      verifyRoleId = selectedRoleId;
+      settings.verifyRoleId = interaction.values[0];
       saveSettings();
       await interaction.update(buildVerifyAdminPanel(guild));
     }
 
     else if (interaction.customId === 'select_log_channel') {
-      const selectedChannelId = interaction.values[0];
-      settings.logChannelId = selectedChannelId;
-      userInfoChannelId = selectedChannelId;
+      settings.logChannelId = interaction.values[0];
       saveSettings();
       await interaction.update(buildVerifyAdminPanel(guild));
     }
 
     else if (interaction.customId === 'select_multi_roles') {
       settings.roleIds = interaction.values;
-      roleIds = interaction.values;
       saveSettings();
       await interaction.update(buildRoleAdminPanel(guild));
     }
@@ -514,7 +408,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.customId === 'admin_deploy_verify_panel') {
       const embed = new EmbedBuilder()
         .setTitle('🔒 メンバー認証')
-        .setDescription('下のボタンを押して認証を開始してください。')
+        .setDescription('下の「認証する」ボタンを押して、テキスト認証を行ってください。\n※作成から日数の浅いアカウント（サブ垢等）は認証できません。')
         .setColor(0x00FF00);
 
       const row = new ActionRowBuilder().addComponents(
@@ -536,21 +430,39 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
+    // 認証ボタンを押したとき：サブ垢チェックを行う
     else if (interaction.customId === 'start_verify') {
-      const code = generateCaptchaCode();
-      activeCaptchas.set(interaction.user.id, code);
-      await interaction.reply({ content: `認証コード: **${code}** (この機能は簡易認証です)`, ephemeral: true });
-      
-      // 仮でロールを付与する処理
-      const settings = getGuildSettings(guild.id);
-      if (settings.verifyRoleId) {
-        try {
-          await interaction.member.roles.add(settings.verifyRoleId);
-          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が認証を完了しました。`);
-        } catch (e) {
-          console.error('認証ロール付与失敗:', e);
-        }
+      const user = interaction.user;
+      const createdTimestamp = user.createdTimestamp;
+      const now = Date.now();
+      const accountAgeDays = (now - createdTimestamp) / (1000 * 60 * 60 * 24);
+
+      // サブ垢判定（作成日数が設定日数未満の場合）
+      if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
+        await sendLog(guild, interaction.member, '⚠️ サブ垢ブロック', `${user.tag} (${user.id}) はアカウント作成から ${Math.floor(accountAgeDays)} 日しか経過していないため、認証を拒否されました。`, 0xFF0000);
+        return interaction.reply({
+          content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウント（サブ垢・新規垢）では認証できません。（あなたのアカウント作成から約 ${Math.floor(accountAgeDays)} 日経過）`,
+          ephemeral: true
+        });
       }
+
+      const code = generateCaptchaCode();
+      activeCaptchas.set(user.id, code);
+
+      const modal = new ModalBuilder()
+        .setCustomId('verify_modal')
+        .setTitle('メンバー認証');
+
+      const textInput = new TextInputBuilder()
+        .setCustomId('verify_code_input')
+        .setLabel(`次の文字を半角で入力してください: ${code}`)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(6)
+        .setMinLength(6);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+      await interaction.showModal(modal);
     }
 
     else if (interaction.customId.startsWith('toggle_role_')) {
@@ -563,6 +475,34 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } else {
         await member.roles.add(roleId);
         await interaction.reply({ content: `<@&${roleId}> を付与しました。`, ephemeral: true });
+      }
+    }
+  }
+
+  // 4. モーダル送信（テキスト認証の答え合わせ）
+  else if (interaction.isModalSubmit()) {
+    if (interaction.customId === 'verify_modal') {
+      const userInput = interaction.fields.getTextInputValue('verify_code_input').trim();
+      const expectedCode = activeCaptchas.get(interaction.user.id);
+
+      if (!expectedCode || userInput.toUpperCase() !== expectedCode) {
+        return interaction.reply({ content: '❌ 認証コードが間違っています。もう一度やり直してください。', ephemeral: true });
+      }
+
+      activeCaptchas.delete(interaction.user.id);
+      const settings = getGuildSettings(guild.id);
+
+      if (settings.verifyRoleId) {
+        try {
+          await interaction.member.roles.add(settings.verifyRoleId);
+          await interaction.reply({ content: '✅ 認証に成功しました！ロールが付与されました。', ephemeral: true });
+          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} がテキスト認証をクリアしました。`);
+        } catch (e) {
+          console.error('認証ロール付与失敗:', e);
+          await interaction.reply({ content: '⚠️ 認証には成功しましたが、ロールの付与に失敗しました。管理者に連絡してください。', ephemeral: true });
+        }
+      } else {
+        await interaction.reply({ content: '✅ 認証に成功しました！（付与ロールが未設定です）', ephemeral: true });
       }
     }
   }
