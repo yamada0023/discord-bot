@@ -45,17 +45,11 @@ const {
 
 const client = new Client({
   intents: [
-    // サーバー
     GatewayIntentBits.Guilds,
-    // メンバー情報
     GatewayIntentBits.GuildMembers,
-    // メッセージ
     GatewayIntentBits.GuildMessages,
-    // リアクション
     GatewayIntentBits.GuildMessageReactions,
-    // メッセージ内容
     GatewayIntentBits.MessageContent,
-    // VC
     GatewayIntentBits.GuildVoiceStates
   ],
   partials: [
@@ -70,13 +64,8 @@ const client = new Client({
 // 設定
 // ============================================================
 
-// 認証ロール
 let verifyRoleId = '1537841157315231896';
-
-// 認証ログチャンネル
 let userInfoChannelId = null;
-
-// ロールパネル
 let roleIds = [
   '1537841157315231896'
 ];
@@ -106,10 +95,7 @@ function defaultGuildSettings() {
     verifyRoleId: '1537841157315231896',
     userInfoChannelId: null,
     roleIds: ['1537841157315231896'],
-    logChannelId: null,
-    ticketCategoryId: null,
-    ticketSupportRoleId: null,
-    ticketPanelChannelId: null
+    logChannelId: null
   };
 }
 
@@ -146,37 +132,12 @@ function saveCurrentGuildSettings(guild) {
 }
 
 // ============================================================
-// 認証コード
+// 各種キャッシュ・マップ
 // ============================================================
-
 const activeCaptchas = new Map();
-
-
-// ============================================================
-// 統計VC
-// ============================================================
-
 const statsChannels = new Map();
-
-
-// ============================================================
-// メンバー統計キャッシュ
-// ============================================================
-
 const memberStatsCache = new Map();
-
-
-// ============================================================
-// 統計更新タイマー
-// ============================================================
-
 const statsUpdateTimers = new Map();
-
-
-// ============================================================
-// メンバー再取得タイマー
-// ============================================================
-
 const memberRefreshTimers = new Map();
 
 
@@ -184,36 +145,23 @@ const memberRefreshTimers = new Map();
 // 認証ログ
 // ============================================================
 
-async function sendLog(
-  guild,
-  member,
-  title,
-  description,
-  color = 0x00FF00
-) {
-  if (!userInfoChannelId) return;
+async function sendLog(guild, member, title, description, color = 0x00FF00) {
+  const settings = getGuildSettings(guild.id);
+  const targetChannelId = settings.logChannelId || userInfoChannelId;
+  if (!targetChannelId) return;
 
   try {
-    const settings = getGuildSettings(guild.id);
-    const targetChannelId = settings.logChannelId || userInfoChannelId;
     const logChannel = guild.channels.cache.get(targetChannelId);
-
     if (!logChannel) return;
 
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setColor(color)
-      .setThumbnail(
-        member.user.displayAvatarURL({
-          dynamic: true
-        })
-      )
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
       .setDescription(description)
       .setTimestamp();
 
-    await logChannel.send({
-      embeds: [embed]
-    });
+    await logChannel.send({ embeds: [embed] });
   } catch (error) {
     console.error('ログ送信失敗:', error);
   }
@@ -228,23 +176,23 @@ function generateCaptchaCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let text = '';
   for (let i = 0; i < 6; i++) {
-    text += chars.charAt(
-      Math.floor(Math.random() * chars.length)
-    );
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return text;
 }
 
 
 // ============================================================
-// ロールパネル生成
+// パネル生成用関数
 // ============================================================
 
 function buildRolePanelComponents(guild) {
+  const settings = getGuildSettings(guild.id);
+  const currentRoles = settings.roleIds || roleIds;
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
-  for (const roleId of roleIds) {
+  for (const roleId of currentRoles) {
     const role = guild.roles.cache.get(roleId);
     const labelName = role ? role.name : `未設定 (${roleId})`;
 
@@ -255,7 +203,6 @@ function buildRolePanelComponents(guild) {
 
     currentRow.addComponents(button);
 
-    // 1行5個まで
     if (currentRow.components.length >= 5) {
       rows.push(currentRow);
       currentRow = new ActionRowBuilder();
@@ -269,23 +216,19 @@ function buildRolePanelComponents(guild) {
   return rows;
 }
 
-
-// ============================================================
-// 認証管理パネル
-// ============================================================
-
-function buildVerifyAdminPanel() {
+function buildVerifyAdminPanel(guild) {
+  const settings = getGuildSettings(guild.id);
   const embed = new EmbedBuilder()
     .setTitle('⚙️ メンバー認証 管理ダッシュボード')
     .setColor(0x5865F2)
     .addFields(
       {
         name: '認証付与ロール',
-        value: verifyRoleId ? `<@&${verifyRoleId}>` : '未設定'
+        value: settings.verifyRoleId ? `<@&${settings.verifyRoleId}>` : '未設定'
       },
       {
         name: 'ログチャンネル',
-        value: userInfoChannelId ? `<#${userInfoChannelId}>` : '未設定'
+        value: (settings.logChannelId || userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
       }
     );
 
@@ -304,7 +247,7 @@ function buildVerifyAdminPanel() {
         .setCustomId('select_log_channel')
         .setPlaceholder('ログ出力先のテキストチャンネルを選択')
         .setChannelTypes(ChannelType.GuildText)
-        .setMinValues(0)
+        .setMinValues(1)
         .setMaxValues(1)
     );
 
@@ -318,22 +261,15 @@ function buildVerifyAdminPanel() {
 
   return {
     embeds: [embed],
-    components: [
-      roleSelectRow,
-      channelSelectRow,
-      buttonRow
-    ]
+    components: [roleSelectRow, channelSelectRow, buttonRow]
   };
 }
 
-
-// ============================================================
-// ロール管理パネル
-// ============================================================
-
-function buildRoleAdminPanel() {
-  const roleDisplay = roleIds.length > 0
-    ? roleIds.map(id => `<@&${id}>`).join('\n')
+function buildRoleAdminPanel(guild) {
+  const settings = getGuildSettings(guild.id);
+  const currentRoles = settings.roleIds || roleIds;
+  const roleDisplay = currentRoles.length > 0
+    ? currentRoles.map(id => `<@&${id}>`).join('\n')
     : '未設定';
 
   const embed = new EmbedBuilder()
@@ -363,58 +299,29 @@ function buildRoleAdminPanel() {
 
   return {
     embeds: [embed],
-    components: [
-      roleSelectRow,
-      buttonRow
-    ]
+    components: [roleSelectRow, buttonRow]
   };
 }
 
 
 // ============================================================
-// 正確なメンバー統計取得
+// 統計関連関数
 // ============================================================
 
 async function refreshMemberStats(guild) {
   try {
-    console.log(`[統計取得] ${guild.name} のメンバー情報を取得中...`);
-
     const members = await guild.members.fetch();
     let humanCount = 0;
     let botCount = 0;
 
     for (const member of members.values()) {
-      if (member.user.bot) {
-        botCount++;
-      } else {
-        humanCount++;
-      }
+      if (member.user.bot) botCount++;
+      else humanCount++;
     }
 
-    const fetchedTotal = members.size;
-    const officialTotal = guild.memberCount || 0;
-    let totalMembers = fetchedTotal;
-
-    if (officialTotal > totalMembers) {
-      console.warn(`[統計警告] ${guild.name} | fetch=${fetchedTotal} | Discord=${officialTotal}`);
-      totalMembers = officialTotal;
-    }
-
-    const result = {
-      totalMembers,
-      humanCount,
-      botCount
-    };
-
+    const totalMembers = Math.max(members.size, guild.memberCount || 0);
+    const result = { totalMembers, humanCount, botCount };
     memberStatsCache.set(guild.id, result);
-
-    console.log(
-      `[統計取得完了] ${guild.name}` +
-      ` | 総:${totalMembers}` +
-      ` | 人間:${humanCount}` +
-      ` | Bot:${botCount}`
-    );
-
     return result;
   } catch (error) {
     console.error(`[統計取得] エラー (${guild.name}):`, error);
@@ -426,122 +333,19 @@ async function refreshMemberStats(guild) {
   }
 }
 
-
-// ============================================================
-// サーバー統計
-// ============================================================
-
 async function getServerStats(guild) {
   const cached = memberStatsCache.get(guild.id);
   const totalMembers = cached ? cached.totalMembers : guild.memberCount;
   const humanCount = cached ? cached.humanCount : guild.members.cache.filter(m => !m.user.bot).size;
   const botCount = cached ? cached.botCount : guild.members.cache.filter(m => m.user.bot).size;
+  const voiceCount = guild.members.cache.filter(member => member.voice && member.voice.channel).size;
 
-  const voiceCount = guild.members.cache.filter(
-    member => member.voice && member.voice.channel
-  ).size;
-
-  return {
-    totalMembers,
-    humanCount,
-    botCount,
-    voiceCount
-  };
+  return { totalMembers, humanCount, botCount, voiceCount };
 }
-
-
-// ============================================================
-// 統計VC作成
-// ============================================================
-
-async function createStatsChannels(guild) {
-  try {
-    console.log(`[統計VC] ${guild.name} の統計チャンネルを確認中...`);
-
-    const stats = await getServerStats(guild);
-    const existingChannels = guild.channels.cache.filter(
-      channel => channel.type === ChannelType.GuildVoice && channel.name.startsWith('📊')
-    );
-
-    let totalChannel = existingChannels.find(c => c.name.startsWith('📊 総メンバー数'));
-    let humanChannel = existingChannels.find(c => c.name.startsWith('📊 人間'));
-    let botChannel = existingChannels.find(c => c.name.startsWith('📊 Bot'));
-    let voiceChannel = existingChannels.find(c => c.name.startsWith('📊 VC参加中'));
-
-    if (!totalChannel) {
-      totalChannel = await guild.channels.create({
-        name: `📊 総メンバー数: ${stats.totalMembers}`,
-        type: ChannelType.GuildVoice,
-        permissionOverwrites: [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionFlagsBits.Connect]
-          }
-        ]
-      });
-    }
-
-    if (!humanChannel) {
-      humanChannel = await guild.channels.create({
-        name: `📊 人間: ${stats.humanCount}`,
-        type: ChannelType.GuildVoice,
-        permissionOverwrites: [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionFlagsBits.Connect]
-          }
-        ]
-      });
-    }
-
-    if (!botChannel) {
-      botChannel = await guild.channels.create({
-        name: `📊 Bot: ${stats.botCount}`,
-        type: ChannelType.GuildVoice,
-        permissionOverwrites: [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionFlagsBits.Connect]
-          }
-        ]
-      });
-    }
-
-    if (!voiceChannel) {
-      voiceChannel = await guild.channels.create({
-        name: `📊 VC参加中: ${stats.voiceCount}`,
-        type: ChannelType.GuildVoice,
-        permissionOverwrites: [
-          {
-            id: guild.roles.everyone.id,
-            deny: [PermissionFlagsBits.Connect]
-          }
-        ]
-      });
-    }
-
-    statsChannels.set(guild.id, {
-      total: totalChannel.id,
-      human: humanChannel.id,
-      bot: botChannel.id,
-      voice: voiceChannel.id
-    });
-
-    await updateStatsChannels(guild);
-  } catch (error) {
-    console.error(`[統計VC] 作成エラー (${guild.name}):`, error);
-  }
-}
-
-
-// ============================================================
-// 統計VC更新
-// ============================================================
 
 async function updateStatsChannels(guild) {
   try {
     if (!guild) return;
-
     const stats = await getServerStats(guild);
     let channelIds = statsChannels.get(guild.id);
 
@@ -561,7 +365,7 @@ async function updateStatsChannels(guild) {
         };
         statsChannels.set(guild.id, channelIds);
       } else {
-        return createStatsChannels(guild);
+        return;
       }
     }
 
@@ -573,26 +377,15 @@ async function updateStatsChannels(guild) {
     if (totalChannel && totalChannel.name !== `📊 総メンバー数: ${stats.totalMembers}`) {
       await totalChannel.setName(`📊 総メンバー数: ${stats.totalMembers}`);
     }
-
     if (humanChannel && humanChannel.name !== `📊 人間: ${stats.humanCount}`) {
       await humanChannel.setName(`📊 人間: ${stats.humanCount}`);
     }
-
     if (botChannel && botChannel.name !== `📊 Bot: ${stats.botCount}`) {
       await botChannel.setName(`📊 Bot: ${stats.botCount}`);
     }
-
     if (voiceChannel && voiceChannel.name !== `📊 VC参加中: ${stats.voiceCount}`) {
       await voiceChannel.setName(`📊 VC参加中: ${stats.voiceCount}`);
     }
-
-    console.log(
-      `[統計更新] ${guild.name}` +
-      ` | 総:${stats.totalMembers}` +
-      ` | 人間:${stats.humanCount}` +
-      ` | Bot:${stats.botCount}` +
-      ` | VC:${stats.voiceCount}`
-    );
   } catch (error) {
     console.error(`[統計VC] 更新エラー (${guild.name}):`, error);
   }
@@ -600,52 +393,181 @@ async function updateStatsChannels(guild) {
 
 
 // ============================================================
-// 統計更新予約
-// ============================================================
-
-function scheduleStatsUpdate(guild) {
-  if (!guild) return;
-
-  if (statsUpdateTimers.has(guild.id)) {
-    clearTimeout(statsUpdateTimers.get(guild.id));
-  }
-
-  const timer = setTimeout(async () => {
-    statsUpdateTimers.delete(guild.id);
-    await updateStatsChannels(guild);
-  }, 1000);
-
-  statsUpdateTimers.set(guild.id, timer);
-}
-
-
-// ============================================================
-// メンバー情報更新予約
-// ============================================================
-
-function scheduleMemberRefresh(guild) {
-  if (!guild) return;
-
-  if (memberRefreshTimers.has(guild.id)) {
-    clearTimeout(memberRefreshTimers.get(guild.id));
-  }
-
-  const timer = setTimeout(async () => {
-    memberRefreshTimers.delete(guild.id);
-    await refreshMemberStats(guild);
-    await updateStatsChannels(guild);
-  }, 5000);
-
-  memberRefreshTimers.set(guild.id, timer);
-}
-
-// ============================================================
-// ボット起動時のイベント
+// イベント: 準備完了
 // ============================================================
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`[ログイン成功] ${c.user.tag} としてログインしました！`);
+  
+  // スラッシュコマンドの登録
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('指定した件数のメッセージを一括削除します')
+      .addIntegerOption(option =>
+        option.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100)
+      ),
+    new SlashCommandBuilder()
+      .setName('role-panel')
+      .setDescription('ロール選択パネルを設置します'),
+    new SlashCommandBuilder()
+      .setName('setup-role')
+      .setDescription('ロール付与パネルの設定管理画面を表示します'),
+    new SlashCommandBuilder()
+      .setName('setup-verify')
+      .setDescription('認証の設定管理画面を表示します'),
+    new SlashCommandBuilder()
+      .setName('verify')
+      .setDescription('認証パネルを設置します')
+  ];
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(c.user.id), { body: commands });
+    console.log('[スラッシュコマンド] 登録が完了しました。');
+  } catch (error) {
+    console.error('[スラッシュコマンド] 登録エラー:', error);
+  }
 });
+
+
+// ============================================================
+// イベント: インタラクション処理（コマンド・ボタン・メニュー）
+// ============================================================
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  const guild = interaction.guild;
+  if (!guild) return;
+
+  // 1. スラッシュコマンド
+  if (interaction.isChatInputCommand()) {
+    const { commandName } = interaction;
+
+    if (commandName === 'clear') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+        return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
+      }
+      const count = interaction.options.getInteger('count');
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const deleted = await interaction.channel.bulkDelete(count, true);
+        await interaction.editReply({ content: `${deleted.size} 件のメッセージを削除しました。` });
+      } catch (error) {
+        await interaction.editReply({ content: 'メッセージの削除に失敗しました。' });
+      }
+    }
+
+    else if (commandName === 'setup-verify') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+      const panel = buildVerifyAdminPanel(guild);
+      await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'setup-role') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+      const panel = buildRoleAdminPanel(guild);
+      await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'verify' || commandName === 'role-panel') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+      await interaction.reply({ content: 'ダッシュボードの「ここに設置」ボタンまたは個別の設定コマンドをご利用ください。', ephemeral: true });
+    }
+  }
+
+  // 2. セレクトメニュー
+  else if (interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) {
+    const settings = getGuildSettings(guild.id);
+
+    if (interaction.customId === 'select_verify_role') {
+      const selectedRoleId = interaction.values[0];
+      settings.verifyRoleId = selectedRoleId;
+      verifyRoleId = selectedRoleId;
+      saveSettings();
+      await interaction.update(buildVerifyAdminPanel(guild));
+    }
+
+    else if (interaction.customId === 'select_log_channel') {
+      const selectedChannelId = interaction.values[0];
+      settings.logChannelId = selectedChannelId;
+      userInfoChannelId = selectedChannelId;
+      saveSettings();
+      await interaction.update(buildVerifyAdminPanel(guild));
+    }
+
+    else if (interaction.customId === 'select_multi_roles') {
+      settings.roleIds = interaction.values;
+      roleIds = interaction.values;
+      saveSettings();
+      await interaction.update(buildRoleAdminPanel(guild));
+    }
+  }
+
+  // 3. ボタン操作
+  else if (interaction.isButton()) {
+    if (interaction.customId === 'admin_deploy_verify_panel') {
+      const embed = new EmbedBuilder()
+        .setTitle('🔒 メンバー認証')
+        .setDescription('下のボタンを押して認証を開始してください。')
+        .setColor(0x00FF00);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('start_verify').setLabel('認証する').setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.channel.send({ embeds: [embed], components: [row] });
+      await interaction.reply({ content: '認証パネルをこのチャンネルに設置しました！', ephemeral: true });
+    }
+
+    else if (interaction.customId === 'admin_deploy_role_panel') {
+      const components = buildRolePanelComponents(guild);
+      const embed = new EmbedBuilder()
+        .setTitle('🏷️ ロール選択パネル')
+        .setDescription('ボタンを押してロールの取得・解除を行えます。')
+        .setColor(0x5865F2);
+
+      await interaction.channel.send({ embeds: [embed], components: components });
+      await interaction.reply({ content: 'ロール選択パネルをこのチャンネルに設置しました！', ephemeral: true });
+    }
+
+    else if (interaction.customId === 'start_verify') {
+      const code = generateCaptchaCode();
+      activeCaptchas.set(interaction.user.id, code);
+      await interaction.reply({ content: `認証コード: **${code}** (この機能は簡易認証です)`, ephemeral: true });
+      
+      // 仮でロールを付与する処理
+      const settings = getGuildSettings(guild.id);
+      if (settings.verifyRoleId) {
+        try {
+          await interaction.member.roles.add(settings.verifyRoleId);
+          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が認証を完了しました。`);
+        } catch (e) {
+          console.error('認証ロール付与失敗:', e);
+        }
+      }
+    }
+
+    else if (interaction.customId.startsWith('toggle_role_')) {
+      const roleId = interaction.customId.replace('toggle_role_', '');
+      const member = interaction.member;
+
+      if (member.roles.cache.has(roleId)) {
+        await member.roles.remove(roleId);
+        await interaction.reply({ content: `<@&${roleId}> を外しました。`, ephemeral: true });
+      } else {
+        await member.roles.add(roleId);
+        await interaction.reply({ content: `<@&${roleId}> を付与しました。`, ephemeral: true });
+      }
+    }
+  }
+});
+
 
 // ============================================================
 // ログイン処理（Discordへの接続）
