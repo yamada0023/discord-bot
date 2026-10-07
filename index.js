@@ -166,11 +166,20 @@ const readingSessions = new Map();
 
 
 // ============================================================
-// ステータス（人数カウント）チャンネルの自動更新関数
+// ステータス（人数カウント）チャンネルの自動更新関数（レートリミット対策版）
 // ============================================================
+
+const lastStatUpdateTimes = new Map();
 
 async function updateServerStats(guild) {
   try {
+    const now = Date.now();
+    const lastTime = lastStatUpdateTimes.get(guild.id) || 0;
+    if (now - lastTime < 60 * 1000) {
+      return;
+    }
+    lastStatUpdateTimes.set(guild.id, now);
+
     await guild.members.fetch();
 
     const totalMembers = guild.memberCount;
@@ -194,13 +203,17 @@ async function updateServerStats(guild) {
       if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
         const name = channel.name;
         if (name.includes('総メンバー数') || name.includes('総メンバー')) {
-          await channel.setName(`総メンバー数: ${totalMembers}`).catch(() => {});
+          const newName = `総メンバー数: ${totalMembers}`;
+          if (name !== newName) await channel.setName(newName).catch(() => {});
         } else if (name.includes('人間:')) {
-          await channel.setName(`人間: ${humanCount}`).catch(() => {});
+          const newName = `人間: ${humanCount}`;
+          if (name !== newName) await channel.setName(newName).catch(() => {});
         } else if (name.includes('Bot:')) {
-          await channel.setName(`Bot: ${botCount}`).catch(() => {});
+          const newName = `Bot: ${botCount}`;
+          if (name !== newName) await channel.setName(newName).catch(() => {});
         } else if (name.includes('VC参加中:')) {
-          await channel.setName(`VC参加中: ${vcHumanCount}`).catch(() => {});
+          const newName = `VC参加中: ${vcHumanCount}`;
+          if (name !== newName) await channel.setName(newName).catch(() => {});
         }
       }
     }
