@@ -598,6 +598,19 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('チケット作成パネルを指定チャンネルに設置します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+      .setName('no-role')
+      .setDescription('メンバーロール（認証ロール等）がついていないメンバーの一覧を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addRoleOption(option =>
+        option.setName('target_role')
+          .setDescription('確認したいロール（省略時は認証ロール）')
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('no-intro')
+      .setDescription('自己紹介を書いていない（メッセージを投稿していない）メンバーの一覧を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
       .setName('vc-time')
       .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),
     new SlashCommandBuilder()
@@ -782,6 +795,125 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.channel.send({ embeds: [embed], components: [row] });
       await interaction.reply({ content: 'チケット作成パネルをこのチャンネルに設置しました！', ephemeral: true });
+    }
+
+    // ==========================================
+    // メンバーロール未付与の判別コマンド (/no-role)
+    // ==========================================
+    else if (commandName === 'no-role') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      await guild.members.fetch();
+
+      const settings = getGuildSettings(guild.id);
+      // 指定されたロール、または設定されている認証ロールを対象にする
+      const targetRoleOpt = interaction.options.getRole('target_role');
+      const checkRoleId = targetRoleOpt ? targetRoleOpt.id : settings.verifyRoleId;
+
+      const embed = new EmbedBuilder()
+        .setTitle('🏷️ メンバーロール未付与者一覧')
+        .setColor(0xFFA500)
+        .setTimestamp();
+
+      if (checkRoleId) {
+        const role = guild.roles.cache.get(checkRoleId);
+        const roleName = role ? role.name : checkRoleId;
+        embed.setDescription(`対象ロール: **${roleName}** (<@&${checkRoleId}>) がついていないメンバー`);
+
+        // 指定ロールを持っていない人間メンバーを抽出
+        const noRoleMembers = guild.members.cache.filter(m => !m.user.bot && !m.roles.cache.has(checkRoleId));
+
+        if (noRoleMembers.size === 0) {
+          embed.addFields({ name: '結果', value: '対象ロールを持っていないメンバーはいません！全員付与されています。' });
+        } else {
+          const list = noRoleMembers.map(m => `• <@${m.id}>`).slice(0, 50).join('\n');
+          embed.addFields({
+            name: `未付与のメンバー (計 ${noRoleMembers.size}人)`,
+            value: list.length > 0 ? list : 'なし'
+          });
+          if (noRoleMembers.size > 50) {
+            embed.setFooter({ text: '※表示都合上、最初の50人まで表示しています。' });
+          }
+        }
+      } else {
+        // ロールが設定されていない場合は、@everyone以外のロールを一切持っていない人を抽出
+        embed.setDescription('対象ロールが未設定のため、ロールが一切付いていない（@everyoneのみの）メンバーを抽出します。');
+        const noRoleMembers = guild.members.cache.filter(m => !m.user.bot && m.roles.cache.size <= 1);
+
+        if (noRoleMembers.size === 0) {
+          embed.addFields({ name: '結果', value: 'ロールが一切ついていないメンバーはいません。' });
+        } else {
+          const list = noRoleMembers.map(m => `• <@${m.id}>`).slice(0, 50).join('\n');
+          embed.addFields({
+            name: `未付与のメンバー (計 ${noRoleMembers.size}人)`,
+            value: list.length > 0 ? list : 'なし'
+          });
+        }
+      }
+
+      await interaction.editReply({ embeds: [embed] });
+    }
+
+    // ==========================================
+    // 自己紹介未記入メンバーの判別コマンド (/no-intro)
+    // ==========================================
+    else if (commandName === 'no-intro') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      await guild.members.fetch();
+
+      const introChannel = guild.channels.cache.find(
+        c => c.type === ChannelType.GuildText && (c.name.includes('自己紹介') || c.name.includes('intro'))
+      );
+
+      if (!introChannel) {
+        return interaction.editReply({ content: '❌ サーバー内に「自己紹介」または「intro」という名前のテキストチャンネルが見つかりませんでした。' });
+      }
+
+      try {
+        let messages = [];
+        let lastId;
+        for (let i = 0; i < 5; i++) {
+          const fetched = await introChannel.messages.fetch({ limit: 100, ...(lastId ? { before: lastId } : {}) });
+          if (fetched.size === 0) break;
+          messages.push(...fetched.values());
+          lastId = fetched.last().id;
+          if (fetched.size < 100) break;
+        }
+
+        const postedUserIds = new Set(messages.map(m => m.author.id));
+        const noIntroMembers = guild.members.cache.filter(m => !m.user.bot && !postedUserIds.has(m.id));
+
+        const embed = new EmbedBuilder()
+          .setTitle(`📝 自己紹介未記入メンバー一覧`)
+          .setDescription(`対象チャンネル: <#${introChannel.id}>`)
+          .setColor(0xFF4500)
+          .setTimestamp();
+
+        if (noIntroMembers.size === 0) {
+          embed.addFields({ name: '結果', value: '対象チャンネルで発言していない人間メンバーはいません。' });
+        } else {
+          const list = noIntroMembers.map(m => `• <@${m.id}>`).slice(0, 50).join('\n');
+          embed.addFields({
+            name: `未記入のメンバー (計 ${noIntroMembers.size}人)`,
+            value: list.length > 0 ? list : 'なし'
+          });
+          if (noIntroMembers.size > 50) {
+            embed.setFooter({ text: '※表示都合上、最初の50人まで表示しています。' });
+          }
+        }
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (error) {
+        console.error('自己紹介チェックエラー:', error);
+        await interaction.editReply({ content: '❌ 自己紹介チャンネルのメッセージ取得に失敗しました。' });
+      }
     }
 
     else if (commandName === 'birthday') {
@@ -1061,14 +1193,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({ content: `<@&${roleId}> を付与しました。`, ephemeral: true });
       }
     }
-    // ==========================================
-    // チケット作成ボタンの処理
-    // ==========================================
     else if (interaction.customId === 'create_ticket') {
       const guild = interaction.guild;
       const user = interaction.user;
 
-      // すでに同じユーザーのチケットチャンネルが存在するかチェック
       const existingChannel = guild.channels.cache.find(
         c => c.name === `ticket-${user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`
       );
@@ -1080,17 +1208,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
 
       try {
-        // プライベートチャンネルの作成
         const ticketChannel = await guild.channels.create({
           name: `ticket-${user.username}`,
           type: ChannelType.GuildText,
           permissionOverwrites: [
             {
-              id: guild.roles.everyone.id, // @everyone は閲覧不可
+              id: guild.roles.everyone.id,
               deny: [PermissionFlagsBits.ViewChannel]
             },
             {
-              id: user.id, // チケット作成者本人は閲覧・送信可能
+              id: user.id,
               allow: [
                 PermissionFlagsBits.ViewChannel,
                 PermissionFlagsBits.SendMessages,
@@ -1098,7 +1225,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
               ]
             },
             {
-              id: client.user.id, // ボット自身も管理可能に
+              id: client.user.id,
               allow: [
                 PermissionFlagsBits.ViewChannel,
                 PermissionFlagsBits.SendMessages,
@@ -1130,12 +1257,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.editReply({ content: `✅ チケットチャンネルを作成しました！ 👉 <#${ticketChannel.id}>` });
       } catch (error) {
         console.error('チケット作成エラー:', error);
-        await interaction.editReply({ content: '❌ チケットチャンネルの作成に失敗しました（ボットに「チャンネルの管理」権限があるか確認してください）。' });
+        await interaction.editReply({ content: '❌ チケットチャンネルの作成に失敗しました。' });
       }
     }
-    // ==========================================
-    // チケットクローズ（削除）ボタンの処理
-    // ==========================================
     else if (interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
       if (!channel.name.startsWith('ticket-')) {
