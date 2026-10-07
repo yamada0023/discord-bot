@@ -47,8 +47,8 @@ const {
 
 const { createCanvas } = require('@napi-rs/canvas');
 
-// 外部ファイル（tts.js）から読み上げ処理をインポート
-const { processQueue } = require('./tts.js');
+// 外部ファイル（tts.js）から読み上げ処理および辞書管理をインポート
+const { processQueue, loadDictionary, saveDictionary } = require('./tts.js');
 
 
 // ============================================================
@@ -525,10 +525,15 @@ client.once(Events.ClientReady, async (c) => {
   const commands = [
     new SlashCommandBuilder()
       .setName('clear')
-      .setDescription('指定した件数のメッセージを一括削除します（管理者限定）')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-      .addIntegerOption(option =>
-        option.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100)
+      .setDescription('メッセージを一括削除、または読み上げキューをクリアします')
+      .addSubcommand(sub =>
+        sub.setName('messages')
+          .setDescription('指定した件数のメッセージを一括削除します（管理者限定）')
+          .addIntegerOption(o => o.setName('count').setDescription('削除するメッセージ数 (1〜100)').setRequired(true).setMinValue(1).setMaxValue(100))
+      )
+      .addSubcommand(sub =>
+        sub.setName('queue')
+          .setDescription('読み上げキューをすべてクリアします')
       ),
     new SlashCommandBuilder()
       .setName('setup-role')
@@ -590,7 +595,7 @@ client.once(Events.ClientReady, async (c) => {
       ),
     new SlashCommandBuilder()
       .setName('join')
-      .setDescription('ボットを指定したボイスチャンネルに参加させます')
+      .setDescription('ボットを指定したボイスチャンネルに参加させ、このチャンネルの読み上げを開始します')
       .addChannelOption(option =>
         option.setName('channel')
           .setDescription('参加させたいボイスチャンネル（省略時はあなたがいるVC）')
@@ -600,6 +605,18 @@ client.once(Events.ClientReady, async (c) => {
     new SlashCommandBuilder()
       .setName('leave')
       .setDescription('ボットをボイスチャンネルから退出させます'),
+    new SlashCommandBuilder()
+      .setName('skip')
+      .setDescription('現在読み上げ中の音声をスキップします'),
+    new SlashCommandBuilder()
+      .setName('dict_add')
+      .setDescription('読み上げ辞書に単語を追加します')
+      .addStringOption(option => option.setName('word').setDescription('登録する単語').setRequired(true))
+      .addStringOption(option => option.setName('reading').setDescription('読み方（ひらがな等）').setRequired(true)),
+    new SlashCommandBuilder()
+      .setName('dict_remove')
+      .setDescription('読み上げ辞書から単語を削除します')
+      .addStringOption(option => option.setName('word').setDescription('削除する単語').setRequired(true)),
     new SlashCommandBuilder()
       .setName('read')
       .setDescription('このチャンネルの音声読み上げを開始します')
@@ -640,7 +657,7 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室の監視
+// イベント: ボイスチャンネル入退室の監視 ＆ 読み上げ通知
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -659,6 +676,19 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
 
   updateServerStats(newState.guild);
+
+  // 読み上げセッションがある場合は入退室を読み上げキューに追加
+  const session = readingSessions.get(guildId);
+  if (session) {
+    const memberName = newState.member.displayName;
+    if (!oldState.channelId && newState.channelId) {
+      session.queue.push(`${memberName}さんが参加しました`);
+      processQueue(guildId, readingSessions);
+    } else if (oldState.channelId && !newState.channelId) {
+      session.queue.push(`${memberName}さんが退出しました`);
+      processQueue(guildId, readingSessions);
+    }
+  }
 });
 
 
@@ -675,8 +705,8 @@ client.on(Events.MessageCreate, async (message) => {
   if (session.textChannelId && message.channel.id !== session.textChannelId) return;
 
   let textToRead = message.content
-    .replace(/https?:\/['\S]+/g, 'リンク')
-    .replace(/<@!?&?\d+>/g, 'さん');
+    .replace(/https?:\/\/[^\s]+/g, 'URL')
+    .replace(/<@&?[0-9]+>/g, 'メンション');
 
   if (!textToRead) return;
   if (textToRead.length > 100) {
@@ -700,16 +730,55 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'clear') {
-      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
+      const subcommand = interaction.options.getSubcommand();
+      if (subcommand === 'messages') {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          return interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
+        }
+        const count = interaction.options.getInteger('count');
+        await interaction.deferReply({ ephemeral: true });
+        try {
+          const deleted = await interaction.channel.bulkDelete(count, true);
+          await interaction.editReply({ content: `${deleted.size} 件のメッセージを削除しました。` });
+        } catch (error) {
+          await interaction.editReply({ content: 'メッセージの削除に失敗しました。' });
+        }
+      } else if (subcommand === 'queue') {
+        const session = readingSessions.get(guild.id);
+        if (!session) return interaction.reply({ content: 'ボットが接続されていません。', ephemeral: true });
+        session.queue = [];
+        if (session.audioPlayer) session.audioPlayer.stop();
+        await interaction.reply({ content: '読み上げキューをすべてクリアしました。', ephemeral: true });
       }
-      const count = interaction.options.getInteger('count');
-      await interaction.deferReply({ ephemeral: true });
-      try {
-        const deleted = await interaction.channel.bulkDelete(count, true);
-        await interaction.editReply({ content: `${deleted.size} 件のメッセージを削除しました。` });
-      } catch (error) {
-        await interaction.editReply({ content: 'メッセージの削除に失敗しました。' });
+    }
+
+    else if (commandName === 'skip') {
+      const session = readingSessions.get(guild.id);
+      if (!session || !session.audioPlayer) {
+        return interaction.reply({ content: 'ボットが接続されていないか、読み上げ中ではありません。', ephemeral: true });
+      }
+      session.audioPlayer.stop();
+      await interaction.reply({ content: '音声をスキップしました。', ephemeral: true });
+    }
+
+    else if (commandName === 'dict_add') {
+      const word = interaction.options.getString('word');
+      const reading = interaction.options.getString('reading');
+      const dict = loadDictionary();
+      dict[word] = reading;
+      saveDictionary(dict);
+      await interaction.reply({ content: `辞書に追加しました: 「${word}」→「${reading}」`, ephemeral: true });
+    }
+
+    else if (commandName === 'dict_remove') {
+      const word = interaction.options.getString('word');
+      const dict = loadDictionary();
+      if (dict[word]) {
+        delete dict[word];
+        saveDictionary(dict);
+        await interaction.reply({ content: `辞書から削除しました: 「${word}」`, ephemeral: true });
+      } else {
+        await interaction.reply({ content: `「${word}」は辞書に登録されていません。`, ephemeral: true });
       }
     }
 
@@ -1012,13 +1081,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       try {
-        joinVoiceChannel({
+        const connection = joinVoiceChannel({
           channelId: targetChannel.id,
           guildId: guild.id,
           adapterCreator: guild.voiceAdapterCreator,
           selfDeaf: false
         });
-        await interaction.reply({ content: `🔊 **${targetChannel.name}** に参加しました！`, ephemeral: true });
+
+        const audioPlayer = createAudioPlayer();
+        connection.subscribe(audioPlayer);
+
+        readingSessions.set(guild.id, {
+          textChannelId: interaction.channel.id,
+          audioPlayer: audioPlayer,
+          queue: [],
+          isPlaying: false
+        });
+
+        await interaction.reply({ content: `🔊 **${targetChannel.name}** に参加し、このチャンネルの読み上げを開始します！`, ephemeral: true });
       } catch (error) {
         console.error('VC参加エラー:', error);
         await interaction.reply({ content: '❌ ボイスチャンネルへの参加に失敗しました。', ephemeral: true });
@@ -1058,7 +1138,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           });
         }
 
-        const { createAudioPlayer } = require('@discordjs/voice');
         const audioPlayer = createAudioPlayer();
         connection.subscribe(audioPlayer);
 
@@ -1069,7 +1148,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           isPlaying: false
         });
 
-        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) の音声読み上げ（Google音声）を **${targetVc.name}** で開始します！`, ephemeral: true });
+        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) の音声読み上げを **${targetVc.name}** で開始します！`, ephemeral: true });
       } catch (error) {
         console.error('読み上げ開始エラー:', error);
         await interaction.reply({ content: '❌ 読み上げの開始に失敗しました。', ephemeral: true });
