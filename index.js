@@ -41,8 +41,7 @@ const {
 const {
   joinVoiceChannel,
   getVoiceConnection,
-  createAudioPlayer,
-  createAudioResource
+  createAudioPlayer
 } = require('@discordjs/voice');
 
 const { createCanvas } = require('@napi-rs/canvas');
@@ -657,30 +656,61 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室の監視 ＆ 読み上げ通知
+// イベント: ボイスチャンネル入退室の監視 ＆ 滞在時間自動通知・読み上げ
 // ============================================================
 
-client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-  if (newState.member?.user.bot) return;
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  const member = newState.member || oldState.member;
+  
+  // ボットは滞在時間の計測・通知対象外にする
+  if (member?.user.bot) return;
 
-  const userId = newState.member.id;
+  const userId = member.id;
   const guildId = newState.guild.id;
   const key = `${guildId}_${userId}`;
   const now = Date.now();
 
+  // 1. VCに参加した場合
   if (!oldState.channelId && newState.channelId) {
     vcJoinTimes.set(key, now);
   }
+  // 2. VCから完全に退出した場合
   else if (oldState.channelId && !newState.channelId) {
-    vcJoinTimes.delete(key);
+    const joinTime = vcJoinTimes.get(key);
+    if (joinTime) {
+      const diffMs = now - joinTime;
+      const totalSeconds = Math.floor(diffMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+
+      let timeString = '';
+      if (hours > 0) timeString += `${hours}時間 `;
+      if (minutes > 0 || hours > 0) timeString += `${minutes}分 `;
+      timeString += `${seconds}秒`;
+
+      const settings = getGuildSettings(guildId);
+      const targetChannelId = settings.logChannelId || settings.birthdayChannelId;
+      
+      if (targetChannelId) {
+        const channel = newState.guild.channels.cache.get(targetChannelId);
+        if (channel) {
+          const oldVc = newState.guild.channels.cache.get(oldState.channelId);
+          const vcName = oldVc ? oldVc.name : 'ボイスチャンネル';
+          await channel.send(`⏱️ **${member.displayName}** さんが **${vcName}** から退出しました。（滞在時間: **${timeString}**）`).catch(() => {});
+        }
+      }
+
+      vcJoinTimes.delete(key);
+    }
   }
 
   updateServerStats(newState.guild);
 
-  // 読み上げセッションがある場合は入退室を読み上げキューに追加
+  // 読み上げセッションがある場合は人間の入退室を読み上げキューに追加
   const session = readingSessions.get(guildId);
   if (session) {
-    const memberName = newState.member.displayName;
+    const memberName = member.displayName;
     if (!oldState.channelId && newState.channelId) {
       session.queue.push(`${memberName}さんが参加しました`);
       processQueue(guildId, readingSessions);
