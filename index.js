@@ -48,6 +48,8 @@ const { createCanvas } = require('@napi-rs/canvas');
 
 // 外部ファイル（tts.js）から読み上げ処理および辞書管理をインポート
 const { processQueue, loadDictionary, saveDictionary } = require('./tts.js');
+// 外部ファイル（animalIcon.js）から動物アイコン生成関数をインポート
+const { generateAnimalIcon } = require('./animalIcon.js');
 
 
 // ============================================================
@@ -112,8 +114,8 @@ function defaultGuildSettings() {
     logChannelId: null,
     birthdayChannelId: null,
     readChannelId: null,
-    pinnedEmbedMessageId: null, // ピン留め一覧を自動更新するメッセージのIDを保持
-    pinnedEmbedChannelId: null  // ピン留め一覧を自動更新するチャンネルのIDを保持
+    pinnedEmbedMessageId: null,
+    pinnedEmbedChannelId: null
   };
 }
 
@@ -215,7 +217,6 @@ async function updatePinnedEmbedForChannel(channel) {
   if (!channel || channel.type !== ChannelType.GuildText) return;
   const settings = getGuildSettings(channel.guild.id);
 
-  // このチャンネルがピン監視対象として設定されているか確認
   if (settings.pinnedEmbedChannelId !== channel.id || !settings.pinnedEmbedMessageId) return;
 
   try {
@@ -573,6 +574,9 @@ client.once(Events.ClientReady, async (c) => {
 
   const commands = [
     new SlashCommandBuilder()
+      .setName('animal-icon')
+      .setDescription('まったり可愛い動物のアイコン画像をランダムに生成します'),
+    new SlashCommandBuilder()
       .setName('clear')
       .setDescription('メッセージを一括削除、または読み上げキューをクリアします')
       .addSubcommand(sub =>
@@ -813,7 +817,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    if (commandName === 'clear') {
+    if (commandName === 'animal-icon') {
+      await interaction.deferReply();
+      try {
+        const buffer = generateAnimalIcon();
+        const attachment = new AttachmentBuilder(buffer, { name: 'animal-icon.png' });
+
+        const embed = new EmbedBuilder()
+          .setTitle('🎨 まったり動物アイコンメーカー')
+          .setDescription('あなたのためにランダム生成された可愛いアイコンです！')
+          .setImage('attachment://animal-icon.png')
+          .setColor(0xFFB6C1)
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed], files: [attachment] });
+      } catch (error) {
+        console.error('アイコン生成エラー:', error);
+        await interaction.editReply({ content: '❌ アイコンの生成に失敗しました。' });
+      }
+    }
+
+    else if (commandName === 'clear') {
       const subcommand = interaction.options.getSubcommand();
       if (subcommand === 'messages') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -919,7 +943,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
         }
 
-        // 入力用モーダルを表示する
         const modal = new ModalBuilder()
           .setCustomId('pin_setup_modal')
           .setTitle('ピン留め一覧メッセージの設定');
@@ -1500,7 +1523,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           }
         }
 
-        // チャンネルに新しいメッセージとして送信し、そのIDを保存する
         const sentMessage = await interaction.channel.send({ embeds: [embed] });
         
         const settings = getGuildSettings(guild.id);
