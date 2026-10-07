@@ -113,6 +113,7 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     birthdayChannelId: null,
+    vcLogChannelId: null, // ⬅️ VC退出ログ出力先用に追加
     readChannelId: null,
     pinnedEmbedMessageId: null,
     pinnedEmbedChannelId: null
@@ -488,6 +489,32 @@ function buildBirthdayAdminPanel(guild) {
   };
 }
 
+function buildVcLogAdminPanel(guild) {
+  const settings = getGuildSettings(guild.id);
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ VC退出ログ機能 管理ダッシュボード')
+    .setColor(0x5865F2)
+    .addFields({
+      name: '現在の出力先チャンネル',
+      value: settings.vcLogChannelId ? `<#${settings.vcLogChannelId}>` : '未設定 (ログは送信されません)'
+    });
+
+  const channelSelectRow = new ActionRowBuilder()
+    .addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('select_vc_log_channel')
+        .setPlaceholder('VC退出ログを送るテキストチャンネルを選択')
+        .setChannelTypes(ChannelType.GuildText)
+        .setMinValues(1)
+        .setMaxValues(1)
+    );
+
+  return {
+    embeds: [embed],
+    components: [channelSelectRow]
+  };
+}
+
 
 // ============================================================
 // 定期チェッカー（お誕生日）
@@ -599,6 +626,10 @@ client.once(Events.ClientReady, async (c) => {
     new SlashCommandBuilder()
       .setName('setup-birthday')
       .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+      .setName('setup-vc-log')
+      .setDescription('VC退出ログの出力先チャンネルを設定します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('setup-ticket')
@@ -749,7 +780,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       timeString += `${seconds}秒`;
 
       const settings = getGuildSettings(guildId);
-      const targetChannelId = settings.logChannelId || settings.birthdayChannelId;
+      const targetChannelId = settings.vcLogChannelId; // ⬅️ 新しく設定したVCログ専用のチャンネルIDを使用
       
       if (targetChannelId) {
         const channel = newState.guild.channels.cache.get(targetChannelId);
@@ -911,6 +942,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
       }
       const panel = buildBirthdayAdminPanel(guild);
+      await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
+    }
+
+    else if (commandName === 'setup-vc-log') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+      }
+      const panel = buildVcLogAdminPanel(guild);
       await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
     }
 
@@ -1298,6 +1337,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       settings.birthdayChannelId = interaction.values[0];
       saveSettings();
       await interaction.update(buildBirthdayAdminPanel(guild));
+    }
+    else if (interaction.customId === 'select_vc_log_channel') {
+      settings.vcLogChannelId = interaction.values[0];
+      saveSettings();
+      await interaction.update(buildVcLogAdminPanel(guild));
     }
   }
 
