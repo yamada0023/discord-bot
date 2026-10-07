@@ -13,7 +13,7 @@ http.createServer((req, res) => {
 
 
 // ============================================================
-// Discord.js & @discordjs/voice & Canvas
+// Discord.js & @discordjs/voice & Canvas ＆ 外部モジュール
 // ============================================================
 
 const {
@@ -42,11 +42,13 @@ const {
   joinVoiceChannel,
   getVoiceConnection,
   createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus
+  createAudioResource
 } = require('@discordjs/voice');
 
 const { createCanvas } = require('@napi-rs/canvas');
+
+// 外部ファイル（tts.js）から読み上げ処理をインポート
+const { processQueue } = require('./tts.js');
 
 
 // ============================================================
@@ -110,8 +112,7 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     birthdayChannelId: null,
-    readChannelId: null,
-    speakerId: 3 // ずんだもん (デフォルト)
+    readChannelId: null
   };
 }
 
@@ -201,57 +202,6 @@ async function updateServerStats(guild) {
     }
   } catch (error) {
     console.error('サーバー統計チャンネル更新エラー:', error);
-  }
-}
-
-
-// ============================================================
-// 読み上げ音声キュー処理（高速化・非同期再生）
-// ============================================================
-
-async function processQueue(guildId) {
-  const session = readingSessions.get(guildId);
-  if (!session || session.isPlaying || session.queue.length === 0) return;
-
-  session.isPlaying = true;
-  const textToRead = session.queue.shift();
-
-  try {
-    const settings = getGuildSettings(guildId);
-    const speaker = settings.speakerId || 3;
-
-    const apiEndpoint = process.env.VOICEVOX_API_URL || 'https://voicevox.su-shiki.com/su-shikiapis/synthesis';
-    const params = new URLSearchParams({
-      speaker: speaker,
-      text: textToRead
-    });
-
-    const response = await fetch(`${apiEndpoint}?${params.toString()}`);
-    if (!response.ok) {
-      session.isPlaying = false;
-      processQueue(guildId);
-      return;
-    }
-
-    const data = await response.json();
-    const audioUrl = data.mp3StreamingUrl || data.audioUrl;
-    if (!audioUrl) {
-      session.isPlaying = false;
-      processQueue(guildId);
-      return;
-    }
-
-    const resource = createAudioResource(audioUrl);
-    session.audioPlayer.play(resource);
-
-    session.audioPlayer.once(AudioPlayerStatus.Idle, () => {
-      session.isPlaying = false;
-      processQueue(guildId);
-    });
-
-  } catch (error) {
-    session.isPlaying = false;
-    processQueue(guildId);
   }
 }
 
@@ -490,53 +440,52 @@ function buildBirthdayAdminPanel(guild) {
 
 
 // ============================================================
-// 毎日のお誕生日チェック処理
+// 定期チェッカー（お誕生日）
 // ============================================================
 
-function startBirthdayChecker(c) {
+function startScheduledTasks(c) {
   setInterval(async () => {
     const now = new Date();
     const month = now.getMonth() + 1;
     const day = now.getDate();
 
     for (const [guildId, guildSettingsMap] of Object.entries(botSettings)) {
-      const birthdayChannelId = guildSettingsMap.birthdayChannelId;
-      if (!birthdayChannelId) continue;
-
       const guild = c.guilds.cache.get(guildId);
       if (!guild) continue;
 
-      const channel = guild.channels.cache.get(birthdayChannelId);
-      if (!channel) continue;
+      const birthdayChannelId = guildSettingsMap.birthdayChannelId;
+      if (birthdayChannelId) {
+        const channel = guild.channels.cache.get(birthdayChannelId);
+        if (channel) {
+          const guildBirthdays = birthdayData[guildId] || {};
+          for (const [userId, bday] of Object.entries(guildBirthdays)) {
+            if (bday.month === month && bday.day === day) {
+              const todayKey = `${now.getFullYear()}-${month}-${day}`;
+              if (bday.lastCelebrated === todayKey) continue;
 
-      const guildBirthdays = birthdayData[guildId] || {};
-      for (const [userId, bday] of Object.entries(guildBirthdays)) {
-        if (bday.month === month && bday.day === day) {
-          const todayKey = `${now.getFullYear()}-${month}-${day}`;
-          if (bday.lastCelebrated === todayKey) continue;
+              try {
+                const member = await guild.members.fetch(userId).catch(() => null);
+                if (member) {
+                  const embed = new EmbedBuilder()
+                    .setTitle('🎉 お誕生日おめでとうございます！ 🎂')
+                    .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)
+                    .setColor(0xFF73FA)
+                    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                    .setTimestamp();
 
-          try {
-            const member = await guild.members.fetch(userId).catch(() => null);
-            if (member) {
-              const embed = new EmbedBuilder()
-                .setTitle('🎉 お誕生日おめでとうございます！ 🎂')
-                .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)
-                .setColor(0xFF73FA)
-                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-                .setTimestamp();
-
-              await channel.send({ content: `<@${userId}>`, embeds: [embed] });
-
-              bday.lastCelebrated = todayKey;
-              saveBirthdays();
+                  await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+                  bday.lastCelebrated = todayKey;
+                  saveBirthdays();
+                }
+              } catch (err) {
+                console.error('誕生日お祝いメッセージ送信エラー:', err);
+              }
             }
-          } catch (err) {
-            console.error('誕生日お祝いメッセージ送信エラー:', err);
           }
         }
       }
     }
-  }, 1000 * 60 * 60);
+  }, 1000 * 60);
 }
 
 
@@ -598,6 +547,18 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('チケット作成パネルを指定チャンネルに設置します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+      .setName('pin')
+      .setDescription('メッセージのピン留め・一括管理を行います')
+      .addSubcommand(sub =>
+        sub.setName('add')
+          .setDescription('指定したメッセージIDをピン留めします（管理者限定）')
+          .addStringOption(o => o.setName('message_id').setDescription('ピン留めしたいメッセージのID').setRequired(true))
+      )
+      .addSubcommand(sub =>
+        sub.setName('list')
+          .setDescription('このチャンネルのピン留めされたメッセージ一覧を表示します')
+      ),
+    new SlashCommandBuilder()
       .setName('no-role')
       .setDescription('メンバーロール（認証ロール等）がついていないメンバーの一覧を表示します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -641,7 +602,7 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('ボットをボイスチャンネルから退出させます'),
     new SlashCommandBuilder()
       .setName('read')
-      .setDescription('このチャンネルの高速音声読み上げを開始します')
+      .setDescription('このチャンネルの音声読み上げを開始します')
       .addChannelOption(option =>
         option.setName('voice_channel')
           .setDescription('読み上げを行うボイスチャンネル（省略時はあなたがいるVC）')
@@ -661,7 +622,7 @@ client.once(Events.ClientReady, async (c) => {
     console.error('[スラッシュコマンド] 登録エラー:', error);
   }
 
-  startBirthdayChecker(c);
+  startScheduledTasks(c);
 });
 
 
@@ -679,7 +640,7 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室の監視（滞在時間＆VC参加中カウンター更新）
+// イベント: ボイスチャンネル入退室の監視
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -702,7 +663,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
 
 // ============================================================
-// イベント: メッセージ受信（非同期＆高速キュー読み上げ）
+// イベント: メッセージ受信（外部モジュールの読み上げキューを呼び出し）
 // ============================================================
 
 client.on(Events.MessageCreate, async (message) => {
@@ -723,7 +684,7 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   session.queue.push(textToRead);
-  processQueue(message.guild.id);
+  processQueue(message.guild.id, readingSessions);
 });
 
 
@@ -782,7 +743,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle('🎫 お問い合わせ・サポートチケット')
+        .setTitle('🎫 おお問い合わせ・サポートチケット')
         .setDescription('運営スタッフへの質問や個別のお問い合わせがある場合は、下のボタンを押してチケットを作成してください。\n作成された専用チャンネルはあなたと管理者のみ閲覧できます。')
         .setColor(0x5865F2);
 
@@ -797,9 +758,63 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: 'チケット作成パネルをこのチャンネルに設置しました！', ephemeral: true });
     }
 
-    // ==========================================
-    // メンバーロール未付与の判別コマンド (/no-role)
-    // ==========================================
+    else if (commandName === 'pin') {
+      const subcommand = interaction.options.getSubcommand();
+
+      if (subcommand === 'add') {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
+        }
+        const messageId = interaction.options.getString('message_id');
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          const targetMessage = await interaction.channel.messages.fetch(messageId);
+          await targetMessage.pin();
+          await interaction.editReply({ content: `📌 メッセージ (ID: \`${messageId}\`) をピン留めしました！` });
+        } catch (error) {
+          console.error('ピン留めエラー:', error);
+          await interaction.editReply({ content: '❌ 指定されたメッセージが見つからないか、ピン留めできませんでした。（IDを確認してください）' });
+        }
+      }
+      else if (subcommand === 'list') {
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          const pinnedMessages = await interaction.channel.messages.fetchPinned();
+          const embed = new EmbedBuilder()
+            .setTitle(`📌 ピン留めされた重要メッセージ一覧`)
+            .setDescription(`チャンネル: <#${interaction.channel.id}>`)
+            .setColor(0xFFD700)
+            .setTimestamp();
+
+          if (pinnedMessages.size === 0) {
+            embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
+          } else {
+            let count = 0;
+            for (const [id, msg] of pinnedMessages) {
+              if (count >= 10) break;
+              const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
+              embed.addFields({
+                name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
+                value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
+                inline: false
+              });
+              count++;
+            }
+            if (pinnedMessages.size > 10) {
+              embed.setFooter({ text: `※最新の10件を表示しています (総ピン留め数: ${pinnedMessages.size}件)` });
+            }
+          }
+
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+          console.error('ピン留め一覧取得エラー:', error);
+          await interaction.editReply({ content: '❌ ピン留め一覧の取得に失敗しました。' });
+        }
+      }
+    }
+
     else if (commandName === 'no-role') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
@@ -809,7 +824,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await guild.members.fetch();
 
       const settings = getGuildSettings(guild.id);
-      // 指定されたロール、または設定されている認証ロールを対象にする
       const targetRoleOpt = interaction.options.getRole('target_role');
       const checkRoleId = targetRoleOpt ? targetRoleOpt.id : settings.verifyRoleId;
 
@@ -823,7 +837,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const roleName = role ? role.name : checkRoleId;
         embed.setDescription(`対象ロール: **${roleName}** (<@&${checkRoleId}>) がついていないメンバー`);
 
-        // 指定ロールを持っていない人間メンバーを抽出
         const noRoleMembers = guild.members.cache.filter(m => !m.user.bot && !m.roles.cache.has(checkRoleId));
 
         if (noRoleMembers.size === 0) {
@@ -839,7 +852,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           }
         }
       } else {
-        // ロールが設定されていない場合は、@everyone以外のロールを一切持っていない人を抽出
         embed.setDescription('対象ロールが未設定のため、ロールが一切付いていない（@everyoneのみの）メンバーを抽出します。');
         const noRoleMembers = guild.members.cache.filter(m => !m.user.bot && m.roles.cache.size <= 1);
 
@@ -857,9 +869,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.editReply({ embeds: [embed] });
     }
 
-    // ==========================================
-    // 自己紹介未記入メンバーの判別コマンド (/no-intro)
-    // ==========================================
     else if (commandName === 'no-intro') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
@@ -1049,6 +1058,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           });
         }
 
+        const { createAudioPlayer } = require('@discordjs/voice');
         const audioPlayer = createAudioPlayer();
         connection.subscribe(audioPlayer);
 
@@ -1059,7 +1069,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           isPlaying: false
         });
 
-        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) の高速音声読み上げを **${targetVc.name}** で開始します！`, ephemeral: true });
+        await interaction.reply({ content: `📖 このチャンネル (<#${interaction.channel.id}>) の音声読み上げ（Google音声）を **${targetVc.name}** で開始します！`, ephemeral: true });
       } catch (error) {
         console.error('読み上げ開始エラー:', error);
         await interaction.reply({ content: '❌ 読み上げの開始に失敗しました。', ephemeral: true });
@@ -1249,7 +1259,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         );
 
         await ticketChannel.send({
-          content: `<@${user.id}> さん、スタッフがお手伝いします！`,
+          content: `<@${user.id}> さん, スタッフがお手伝いします！`,
           embeds: [ticketEmbed],
           components: [closeRow]
         });
