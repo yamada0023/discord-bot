@@ -111,7 +111,9 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     birthdayChannelId: null,
-    readChannelId: null
+    readChannelId: null,
+    pinnedEmbedMessageId: null, // ピン留め一覧を自動更新するメッセージのIDを保持
+    pinnedEmbedChannelId: null  // ピン留め一覧を自動更新するチャンネルのIDを保持
   };
 }
 
@@ -201,6 +203,54 @@ async function updateServerStats(guild) {
     }
   } catch (error) {
     console.error('サーバー統計チャンネル更新エラー:', error);
+  }
+}
+
+
+// ============================================================
+// ピン留め一覧の埋め込みを作成・更新するヘルパー関数
+// ============================================================
+
+async function updatePinnedEmbedForChannel(channel) {
+  if (!channel || channel.type !== ChannelType.GuildText) return;
+  const settings = getGuildSettings(channel.guild.id);
+
+  // このチャンネルがピン監視対象として設定されているか確認
+  if (settings.pinnedEmbedChannelId !== channel.id || !settings.pinnedEmbedMessageId) return;
+
+  try {
+    const targetMessage = await channel.messages.fetch(settings.pinnedEmbedMessageId).catch(() => null);
+    if (!targetMessage) return;
+
+    const pinnedMessages = await channel.messages.fetchPinned();
+    const embed = new EmbedBuilder()
+      .setTitle(`📌 ピン留めされた重要メッセージ一覧 (自動更新)`)
+      .setDescription(`チャンネル: <#${channel.id}>`)
+      .setColor(0xFFD700)
+      .setTimestamp();
+
+    if (pinnedMessages.size === 0) {
+      embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
+    } else {
+      let count = 0;
+      for (const [id, msg] of pinnedMessages) {
+        if (count >= 10) break;
+        const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
+        embed.addFields({
+          name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
+          value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
+          inline: false
+        });
+        count++;
+      }
+      if (pinnedMessages.size > 10) {
+        embed.setFooter({ text: `※最新の10件を表示しています (総ピン留め数: ${pinnedMessages.size}件)` });
+      }
+    }
+
+    await targetMessage.edit({ embeds: [embed] });
+  } catch (error) {
+    console.error('ピン留め埋め込みの自動更新エラー:', error);
   }
 }
 
@@ -552,15 +602,14 @@ client.once(Events.ClientReady, async (c) => {
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
       .setName('pin')
-      .setDescription('メッセージのピン留め・一括管理を行います')
+      .setDescription('ピン留め一覧の管理を行います')
       .addSubcommand(sub =>
-        sub.setName('add')
-          .setDescription('指定したメッセージIDをピン留めします（管理者限定）')
-          .addStringOption(o => o.setName('message_id').setDescription('ピン留めしたいメッセージのID').setRequired(true))
+        sub.setName('setup')
+          .setDescription('入力フォーム（モーダル）を開き、自動更新されるピン留め一覧メッセージを設置します（管理者限定）')
       )
       .addSubcommand(sub =>
         sub.setName('list')
-          .setDescription('このチャンネルのピン留めされたメッセージ一覧を表示します')
+          .setDescription('現在のピン留め一覧を一時表示します')
       ),
     new SlashCommandBuilder()
       .setName('no-role')
@@ -643,6 +692,15 @@ client.once(Events.ClientReady, async (c) => {
 
 
 // ============================================================
+// イベント: ピン留めが更新されたときに埋め込みを自動編集
+// ============================================================
+
+client.on(Events.ChannelPinsUpdate, async (channel, time) => {
+  await updatePinnedEmbedForChannel(channel);
+});
+
+
+// ============================================================
 // イベント: メンバーの参加・退出時にカウンターを更新
 // ============================================================
 
@@ -662,7 +720,6 @@ client.on(Events.GuildMemberRemove, (member) => {
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const member = newState.member || oldState.member;
   
-  // ボットは滞在時間の計測・通知対象外にする
   if (member?.user.bot) return;
 
   const userId = member.id;
@@ -670,11 +727,9 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const key = `${guildId}_${userId}`;
   const now = Date.now();
 
-  // 1. VCに参加した場合
   if (!oldState.channelId && newState.channelId) {
     vcJoinTimes.set(key, now);
   }
-  // 2. VCから完全に退出した場合
   else if (oldState.channelId && !newState.channelId) {
     const joinTime = vcJoinTimes.get(key);
     if (joinTime) {
@@ -707,7 +762,6 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
   updateServerStats(newState.guild);
 
-  // 読み上げセッションがある場合は人間の入退室を読み上げキューに追加
   const session = readingSessions.get(guildId);
   if (session) {
     const memberName = member.displayName;
@@ -723,7 +777,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
 
 // ============================================================
-// イベント: メッセージ受信（外部モジュールの読み上げキューを呼び出し）
+// イベント: メッセージ受信
 // ============================================================
 
 client.on(Events.MessageCreate, async (message) => {
@@ -860,21 +914,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
     else if (commandName === 'pin') {
       const subcommand = interaction.options.getSubcommand();
 
-      if (subcommand === 'add') {
+      if (subcommand === 'setup') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
           return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
         }
-        const messageId = interaction.options.getString('message_id');
-        await interaction.deferReply({ ephemeral: true });
 
-        try {
-          const targetMessage = await interaction.channel.messages.fetch(messageId);
-          await targetMessage.pin();
-          await interaction.editReply({ content: `📌 メッセージ (ID: \`${messageId}\`) をピン留めしました！` });
-        } catch (error) {
-          console.error('ピン留めエラー:', error);
-          await interaction.editReply({ content: '❌ 指定されたメッセージが見つからないか、ピン留めできませんでした。（IDを確認してください）' });
-        }
+        // 入力用モーダルを表示する
+        const modal = new ModalBuilder()
+          .setCustomId('pin_setup_modal')
+          .setTitle('ピン留め一覧メッセージの設定');
+
+        const textInput = new TextInputBuilder()
+          .setCustomId('pin_intro_text')
+          .setLabel('埋め込みに表示するタイトルやメモ（任意）')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('例: 📌 チャンネルの重要なお知らせ一覧')
+          .setRequired(false);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+        return await interaction.showModal(modal);
       }
       else if (subcommand === 'list') {
         await interaction.deferReply({ ephemeral: true });
@@ -946,9 +1004,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             name: `未付与のメンバー (計 ${noRoleMembers.size}人)`,
             value: list.length > 0 ? list : 'なし'
           });
-          if (noRoleMembers.size > 50) {
-            embed.setFooter({ text: '※表示都合上、最初の50人まで表示しています。' });
-          }
         }
       } else {
         embed.setDescription('対象ロールが未設定のため、ロールが一切付いていない（@everyoneのみの）メンバーを抽出します。');
@@ -1012,9 +1067,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             name: `未記入のメンバー (計 ${noIntroMembers.size}人)`,
             value: list.length > 0 ? list : 'なし'
           });
-          if (noIntroMembers.size > 50) {
-            embed.setFooter({ text: '※表示都合上、最初の50人まで表示しています。' });
-          }
         }
 
         await interaction.editReply({ embeds: [embed] });
@@ -1418,6 +1470,48 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       } else {
         await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
+      }
+    }
+    else if (interaction.customId === 'pin_setup_modal') {
+      const introText = interaction.fields.getTextInputValue('pin_intro_text') || '📌 ピン留めされた重要メッセージ一覧';
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        const pinnedMessages = await interaction.channel.messages.fetchPinned();
+        const embed = new EmbedBuilder()
+          .setTitle(introText)
+          .setDescription(`チャンネル: <#${interaction.channel.id}>`)
+          .setColor(0xFFD700)
+          .setTimestamp();
+
+        if (pinnedMessages.size === 0) {
+          embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
+        } else {
+          let count = 0;
+          for (const [id, msg] of pinnedMessages) {
+            if (count >= 10) break;
+            const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
+            embed.addFields({
+              name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
+              value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
+              inline: false
+            });
+            count++;
+          }
+        }
+
+        // チャンネルに新しいメッセージとして送信し、そのIDを保存する
+        const sentMessage = await interaction.channel.send({ embeds: [embed] });
+        
+        const settings = getGuildSettings(guild.id);
+        settings.pinnedEmbedChannelId = interaction.channel.id;
+        settings.pinnedEmbedMessageId = sentMessage.id;
+        saveSettings();
+
+        await interaction.editReply({ content: '✅ ピン留め一覧の自動更新メッセージをこのチャンネルに設置しました！今後ピン留めが変更されると、このメッセージが自動で書き換わります。' });
+      } catch (error) {
+        console.error('ピン留めセットアップエラー:', error);
+        await interaction.editReply({ content: '❌ ピン留め一覧の設置に失敗しました。ボットに「メッセージの履歴を読む」や「メッセージ送信」の権限があるか確認してください。' });
       }
     }
   }
