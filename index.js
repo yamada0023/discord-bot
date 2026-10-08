@@ -205,10 +205,10 @@ app.get('/callback', async (req, res) => {
     }
 
     const userResponse = await fetch('https://discord.com/api/users/@me', {
-      headers: {
-        authorization: `${tokenData.token_type}${tokenData.access_token}`,
-      },
-    });
+  headers: {
+    authorization: `Bearer ${tokenData.access_token}`,
+  },
+});
     const userData = await userResponse.json();
 
     if (!userData.id) {
