@@ -159,12 +159,13 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント（セキュリティ・VPN・マルチアカウント検知統合）
+// 3. Discordからのコールバック受信用エンドポイント（詳細な失敗ログ出力対応）
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
 
   if (!code) {
+    console.error('[認証エラー] 認証コード (code) が取得できませんでした。');
     return res.status(400).send('❌ 認証コードが取得できませんでした。');
   }
 
@@ -175,6 +176,7 @@ app.get('/callback', async (req, res) => {
     // ① VPN / プロキシ / データセンター検知
     const isVpn = await checkVpnOrProxy(clientIp);
     if (isVpn) {
+      console.warn(`[認証失敗: VPN検知] IP: ${clientIp} からのアクセスがブロックされました。`);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -201,18 +203,19 @@ app.get('/callback', async (req, res) => {
 
     const tokenData = await tokenResponse.json();
     if (!tokenData.access_token) {
+      console.error('[認証エラー] Discordアクセストークンの取得に失敗しました:', tokenData);
       return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
     }
 
     const userResponse = await fetch('https://discord.com/api/users/@me', {
-  headers: {
-    authorization: `Bearer ${tokenData.access_token}`,
-  },
-});
+      headers: {
+        authorization: `Bearer ${tokenData.access_token}`,
+      },
+    });
     const userData = await userResponse.json();
 
     if (!userData.id) {
-      console.log('ユーザー情報取得失敗:', userData);
+      console.error('[認証エラー] ユーザー情報の取得に失敗しました:', userData);
       return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
     }
 
@@ -229,6 +232,7 @@ app.get('/callback', async (req, res) => {
     // ③ マルチアカウント（同一IPまたは同一ブラウザ端末からの別アカウント認証）検知
     const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
     if (isMultiAccount) {
+      console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}`);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -244,6 +248,7 @@ app.get('/callback', async (req, res) => {
     const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
 
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
+      console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -273,13 +278,15 @@ app.get('/callback', async (req, res) => {
             </body>
           </html>
         `);
+      } else {
+        console.error(`[認証エラー] サーバー内にメンバーが見つからないか、ロールが未設定です。GuildId: ${guildId}, UserId:${userData.id}`);
       }
     }
 
     res.send('<html><body style="text-align:center; padding-top:50px;"><h1>✅ 認証処理が完了しました。</h1><p>Discordをご確認ください。</p></body></html>');
 
   } catch (error) {
-    console.error('OAuth2コールバックエラー:', error);
+    console.error('[OAuth2コールバック例外エラー]:', error);
     res.status(500).send('❌ 認証処理中にサーバーエラーが発生しました。');
   }
 });
