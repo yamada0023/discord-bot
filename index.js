@@ -68,9 +68,9 @@ app.get('/callback', async (req, res) => {
     }
 
     // ▼▼▼ 【修正】 token_type と access_token の間に半角スペースを追加 ▼▼▼
-    const userResponse = await fetch('https://discord.com/api/users/@me', {
+   const userResponse = await fetch('https://discord.com/api/users/@me', {
       headers: {
-        authorization: `${tokenData.token_type}${tokenData.access_token}`,
+        authorization: `${tokenData.token_type} ${tokenData.access_token}`,
       },
     });
     const userData = await userResponse.json();
