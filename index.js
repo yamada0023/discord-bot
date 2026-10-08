@@ -15,6 +15,74 @@ const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// ============================================================
+// セキュリティ・認証履歴の永続化管理 & 検知システム
+// ============================================================
+const DATA_DIR = path.join(__dirname, 'data');
+const SECURITY_FILE = path.join(DATA_DIR, 'security-logs.json');
+
+function loadSecurityLogs() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(SECURITY_FILE)) return {};
+    const raw = fs.readFileSync(SECURITY_FILE, 'utf8');
+    return JSON.parse(raw || '{}');
+  } catch (error) {
+    console.error('[セキュリティログ] 読み込みエラー:', error);
+    return {};
+  }
+}
+
+const securityData = loadSecurityLogs();
+
+function saveSecurityLogs() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(SECURITY_FILE, JSON.stringify(securityData, null, 2), 'utf8');
+  } catch (error) {
+    console.error('[セキュリティログ] 保存エラー:', error);
+  }
+}
+
+// VPN / プロキシ検知関数
+async function checkVpnOrProxy(clientIp) {
+  if (!clientIp || clientIp === '127.0.0.1' || clientIp === '::1') return false;
+  try {
+    const vpnCheckRes = await fetch(`https://proxycheck.io/v2/${clientIp}?vpn=1&asn=1`);
+    const vpnData = await vpnCheckRes.json();
+    if (vpnData && vpnData[clientIp] && vpnData[clientIp].proxy === 'yes') {
+      return true;
+    }
+  } catch (err) {
+    console.log('VPNチェックAPIスキップまたはエラー:', err);
+  }
+  return false;
+}
+
+// マルチアカウント（IP / フィンガープリンティング）紐付けチェック
+function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
+  if (!securityData[guildId]) {
+    securityData[guildId] = { ips: {}, fingerprints: {} };
+  }
+  const guildSec = securityData[guildId];
+
+  const existingUserByIp = guildSec.ips[clientIp];
+  const existingUserByFp = guildSec.fingerprints[fingerprint];
+
+  // すでに別のユーザーIDで登録されている場合
+  if ((existingUserByIp && existingUserByIp !== userId) || (existingUserByFp && existingUserByFp !== userId)) {
+    return true;
+  }
+
+  // 今回の情報を記録・保存
+  guildSec.ips[clientIp] = userId;
+  guildSec.fingerprints[fingerprint] = userId;
+  saveSecurityLogs();
+
+  return false;
+}
+
+
 // 1. Botの生存確認用
 app.get('/', (req, res) => {
   res.send(`
@@ -22,32 +90,101 @@ app.get('/', (req, res) => {
       <head><title>Discord Verify Bot</title></head>
       <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
         <h1>🤖 Bot is alive & Web Verify System is Ready!</h1>
-        <p>このサーバーではWebブラウザを通じたメンバー認証システムが稼働しています。</p>
+        <p>このサーバーではWebブラウザを通じた高度なセキュリティメンバー認証システムが稼働しています。</p>
       </body>
     </html>
   `);
 });
 
-// 2. 認証ページへの誘導、または直接Discord OAuth2へリダイレクト
+// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導
 app.get('/verify', (req, res) => {
   const guildId = req.query.guild;
   if (!guildId) {
     return res.status(400).send('エラー: サーバーID（guild）が指定されていません。');
   }
 
-  const oauthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
-  
-  res.redirect(oauthUrl);
+  // ブラウザ側でフィンガープリンティングを生成してからDiscordのOAuth2へ転送するHTMLを返す
+  res.send(`
+    <html>
+      <head>
+        <title>セキュリティ確認中 - Discord Verify</title>
+        <style>
+          body { font-family: sans-serif; text-align: center; padding-top: 100px; background: #2f3136; color: #fff; }
+          .spinner { border: 4px solid rgba(255,255,255,0.1); width: 40px; height: 40px; border-radius: 50%; border-left-color: #7289da; animation: spin 1s linear infinite; margin: 20px auto; }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        </style>
+      </head>
+      <body>
+        <h2>🔒 セキュリティチェックを実行中...</h2>
+        <div class="spinner"></div>
+        <p>ブラウザの環境を確認しています。まもなくDiscordの認証画面に移動します。</p>
+        <script>
+          async function generateFingerprint() {
+            try {
+              const canvas = document.createElement('canvas');
+              const ctx = canvas.getContext('2d');
+              ctx.textBaseline = "top";
+              ctx.font = "14px 'Arial'";
+              ctx.fillText("Discord Verify Security", 2, 2);
+              const canvasData = canvas.toDataURL();
+
+              const fpString = [
+                navigator.userAgent,
+                navigator.language,
+                screen.colorDepth,
+                screen.width + 'x' + screen.height,
+                new Date().getTimezoneOffset(),
+                canvasData.substring(canvasData.length - 50)
+              ].join('||');
+
+              const msgBuffer = new TextEncoder().encode(fpString);
+              const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+              const hashArray = Array.from(new Uint8Array(hashBuffer));
+              const fpHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+              const clientId = "${CLIENT_ID}";
+              const redirectUri = encodeURIComponent("${REDIRECT_URI}");
+              const oauthUrl = \`https://discord.com/api/oauth2/authorize?client_id=\${clientId}&redirect_uri=\${redirectUri}&response_type=code&scope=identify%20guilds.join&state=\${encodeURIComponent(JSON.stringify({ guild: "${guildId}", fp: fpHash }))}\`;
+              
+              window.location.href = oauthUrl;
+            } catch (e) {
+              console.error(e);
+              alert('セキュリティチェックに失敗しました。');
+            }
+          }
+          generateFingerprint();
+        </script>
+      </body>
+    </html>
+  `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント
+// 3. Discordからのコールバック受信用エンドポイント（セキュリティ・VPN・マルチアカウント検知統合）
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
+  const stateRaw = req.query.state;
+
   if (!code) {
     return res.status(400).send('❌ 認証コードが取得できませんでした。');
   }
 
+  // IPアドレスの取得（Render等のプロキシ環境を考慮）
+  const clientIp = req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : req.socket.remoteAddress;
+
   try {
+    // ① VPN / プロキシ / データセンター検知
+    const isVpn = await checkVpnOrProxy(clientIp);
+    if (isVpn) {
+      return res.send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
+            <h1>❌ 認証失敗 (VPN / プロキシ検知)</h1>
+            <p>VPNまたはプロキシ経由からのアクセスが検知されたため、セキュリティ上このサーバーへの参加は許可されていません。</p>
+          </body>
+        </html>
+      `);
+    }
+
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       body: new URLSearchParams({
@@ -67,10 +204,9 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
     }
 
-    // ▼▼▼ 【修正】 token_type と access_token の間に半角スペースを追加 ▼▼▼
-   const userResponse = await fetch('https://discord.com/api/users/@me', {
+    const userResponse = await fetch('https://discord.com/api/users/@me', {
       headers: {
-        authorization: `${tokenData.token_type} ${tokenData.access_token}`,
+        authorization: `${tokenData.token_type}${tokenData.access_token}`,
       },
     });
     const userData = await userResponse.json();
@@ -80,6 +216,30 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
     }
 
+    // ② 状態（guildId と ブラウザフィンガープリンティング）の復元
+    let guildId, fingerprint = 'unknown';
+    try {
+      const stateData = JSON.parse(stateRaw || '{}');
+      guildId = stateData.guild;
+      fingerprint = stateData.fp || 'unknown';
+    } catch (e) {
+      guildId = [...client.guilds.cache.keys()][0];
+    }
+
+    // ③ マルチアカウント（同一IPまたは同一ブラウザ端末からの別アカウント認証）検知
+    const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
+    if (isMultiAccount) {
+      return res.send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
+            <h1>❌ 認証失敗 (マルチアカウント検知)</h1>
+            <p>同一のネットワーク環境または端末（ブラウザ）から、すでに別のアカウントが認証されています。複数アカウントでの認証は禁止されています。</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // ④ アカウント作成日数のチェック（サブ垢対策）
     const userCreatedAt = new Date(Number(BigInt(userData.id) >> 22n) + 1420070400000);
     const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
 
@@ -94,8 +254,7 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    const guildId = [...client.guilds.cache.keys()][0];
-    const guild = client.guilds.cache.get(guildId);
+    const guild = client.guilds.cache.get(guildId) || client.guilds.cache.first();
 
     if (guild) {
       const member = await guild.members.fetch(userData.id).catch(() => null);
@@ -104,7 +263,7 @@ app.get('/callback', async (req, res) => {
       if (member && settings.verifyRoleId) {
         await member.roles.add(settings.verifyRoleId);
         
-        sendLog(guild, member, 'Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の認証をクリアしました。`);
+        sendLog(guild, member, 'Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`);
 
         return res.send(`
           <html>
@@ -204,7 +363,6 @@ const MIN_ACCOUNT_AGE_DAYS = 7;
 // ============================================================
 // 永続設定（サーバーごと）
 // ============================================================
-const DATA_DIR = path.join(__dirname, 'data');
 const SETTINGS_FILE = path.join(DATA_DIR, 'bot-settings.json');
 const BIRTHDAYS_FILE = path.join(DATA_DIR, 'birthdays.json');
 
@@ -462,8 +620,8 @@ function buildVerifyAdminPanel(guild) {
         value: (settings.logChannelId || userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
       },
       {
-        name: 'サブ垢対策',
-        value: `アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のアカウントをブロック`
+        name: 'セキュリティ設定',
+        value: `• サブ垢対策: ${MIN_ACCOUNT_AGE_DAYS}日未満をブロック\n• VPN/プロキシ検知: 有効\n• マルチアカウント検知: 有効`
       }
     );
 
