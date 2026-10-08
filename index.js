@@ -1,15 +1,134 @@
+// ============================================================
+// Webサーバー & OAuth2 認証設定 (Express)
+// ============================================================
+const express = require('express');
+const app = express();
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// ============================================================
-// Webサーバー
-// ============================================================
+// 環境変数（RenderやReplit、VPS等で設定するもの）
+// CLIENT_ID, CLIENT_SECRET, REDIRECT_URI が必要になります
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+// 例: https://your-bot-domain.com/callback
+const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI;
 
-http.createServer((req, res) => {
-  res.write("Bot is alive!");
-  res.end();
-}).listen(process.env.PORT || 3000);
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+// 1. Botの生存確認用
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <head><title>Discord Verify Bot</title></head>
+      <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+        <h1>🤖 Bot is alive & Web Verify System is Ready!</h1>
+        <p>このサーバーではWebブラウザを通じたメンバー認証システムが稼働しています。</p>
+      </body>
+    </html>
+  `);
+});
+
+// 2. 認証ページへの誘導、または直接Discord OAuth2へリダイレクト
+app.get('/verify', (req, res) => {
+  const guildId = req.query.guild;
+  if (!guildId) {
+    return res.status(400).send('エラー: サーバーID（guild）が指定されていません。');
+  }
+
+  // DiscordのOAuth2認証画面へ飛ばす
+  const oauthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
+  
+  res.redirect(oauthUrl);
+});
+
+// 3. Discordからのコールバック受信用エンドポイント
+app.get('/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) {
+    return res.status(400).send('❌ 認証コードが取得できませんでした。');
+  }
+
+  try {
+    // 1. アクセストークンの取得
+    const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      body: new URLSearchParams({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code: code,
+        redirect_uri: REDIRECT_URI,
+      }),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) {
+      return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
+    }
+
+    // 2. 認証したユーザー情報の取得
+    const userResponse = await fetch('https://discord.com/api/users/@me', {
+      headers: {
+        authorization: `${tokenData.token_type}${tokenData.access_token}`,
+      },
+    });
+    const userData = await userResponse.json();
+
+    const userCreatedAt = new Date(Number(BigInt(userData.id) >> 22n) + 1420070400000);
+    const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
+
+    if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
+      return res.send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
+            <h1>❌ 認証失敗 (サブアカウント検知)</h1>
+            <p>アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のため、このサーバーへの参加・認証は許可されていません。</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // 3. Botが参加しているDiscordサーバー（Guild）のメンバーにロールを付与する処理
+    const guildId = [...client.guilds.cache.keys()][0];
+    const guild = client.guilds.cache.get(guildId);
+
+    if (guild) {
+      const member = await guild.members.fetch(userData.id).catch(() => null);
+      const settings = getGuildSettings(guild.id);
+
+      if (member && settings.verifyRoleId) {
+        await member.roles.add(settings.verifyRoleId);
+        
+        sendLog(guild, member, 'Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の認証をクリアしました。`);
+
+        return res.send(`
+          <html>
+            <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #008000;">
+              <h1>✅ 認証に成功しました！</h1>
+              <p>Discordに戻ってサーバーをお楽しみください。このタブは閉じて構いません。</p>
+            </body>
+          </html>
+        `);
+      }
+    }
+
+    res.send('<html><body style="text-align:center; padding-top:50px;"><h1>✅ 認証処理が完了しました。</h1><p>Discordをご確認ください。</p></body></html>');
+
+  } catch (error) {
+    console.error('OAuth2コールバックエラー:', error);
+    res.status(500).send('❌ 認証処理中にサーバーエラーが発生しました。');
+  }
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`[Webサーバー] ポート ${process.env.PORT || 3000} で起動しました。`);
+});
 
 
 // ============================================================
@@ -113,7 +232,7 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     birthdayChannelId: null,
-    vcLogChannelId: null, // ⬅️ VC退出ログ出力先用に追加
+    vcLogChannelId: null,
     readChannelId: null,
     pinnedEmbedMessageId: null,
     pinnedEmbedChannelId: null
@@ -298,60 +417,6 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
 
 
 // ============================================================
-// 認証コード＆画像生成
-// ============================================================
-
-function generateCaptchaCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let text = '';
-  for (let i = 0; i < 6; i++) {
-    text += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return text;
-}
-
-function createCaptchaImage(text) {
-  const canvas = createCanvas(300, 100);
-  const ctx = canvas.getContext('2d');
-
-  ctx.fillStyle = '#2f3136';
-  ctx.fillRect(0, 0, 300, 100);
-
-  for (let i = 0; i < 6; i++) {
-    ctx.strokeStyle = `rgba(${Math.random() * 255}, ${Math.random() * 255},${Math.random() * 255}, 0.5)`;
-    ctx.lineWidth = Math.random() * 3 + 1;
-    ctx.beginPath();
-    ctx.moveTo(Math.random() * 300, Math.random() * 100);
-    ctx.lineTo(Math.random() * 300, Math.random() * 100);
-    ctx.stroke();
-  }
-
-  for (let i = 0; i < 100; i++) {
-    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.5})`;
-    ctx.fillRect(Math.random() * 300, Math.random() * 100, 2, 2);
-  }
-
-  ctx.font = 'bold 45px sans-serif';
-  ctx.textBaseline = 'middle';
-
-  for (let i = 0; i < text.length; i++) {
-    ctx.save();
-    const x = 35 + i * 40;
-    const y = 50 + (Math.random() * 20 - 10);
-    const angle = (Math.random() * 30 - 15) * Math.PI / 180;
-
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(text[i], 0, 0);
-    ctx.restore();
-  }
-
-  return canvas.toBuffer('image/png');
-}
-
-
-// ============================================================
 // パネル生成用関数
 // ============================================================
 
@@ -428,7 +493,7 @@ function buildVerifyAdminPanel(guild) {
     .addComponents(
       new ButtonBuilder()
         .setCustomId('admin_deploy_verify_panel')
-        .setLabel('ここに認証パネルを設置')
+        .setLabel('ここにWeb認証パネルを設置')
         .setStyle(ButtonStyle.Success)
     );
 
@@ -793,7 +858,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       timeString += `${seconds}秒`;
 
       const settings = getGuildSettings(guildId);
-      const targetChannelId = settings.vcLogChannelId; // ⬅️ 新しく設定したVCログ専用のチャンネルIDを使用
+      const targetChannelId = settings.vcLogChannelId;
       
       if (targetChannelId) {
         const channel = newState.guild.channels.cache.get(targetChannelId);
@@ -1365,16 +1430,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const embed = new EmbedBuilder()
-        .setTitle('🔒 メンバー認証')
-        .setDescription('下のボタンを押して画像認証を行ってください。')
+        .setTitle('🔒 Webメンバー認証')
+        .setDescription('下のボタンを押して、ブラウザから安全に認証を行ってください。')
         .setColor(0x00FF00);
 
+      const verifyWebUrl = `https://あなたのボットのドメイン.com/verify?guild=${guild.id}`;
+
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('start_verify').setLabel('認証する').setStyle(ButtonStyle.Success)
+        new ButtonBuilder()
+          .setLabel('🌐 ブラウザで認証する')
+          .setStyle(ButtonStyle.Link)
+          .setURL(verifyWebUrl)
       );
 
       await interaction.channel.send({ embeds: [embed], components: [row] });
-      await interaction.reply({ content: '認証パネルを設置しました！', ephemeral: true });
+      await interaction.reply({ content: 'Web認証パネルを設置しました！', ephemeral: true });
     }
     else if (interaction.customId === 'admin_deploy_role_panel') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -1389,48 +1459,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.channel.send({ embeds: [embed], components: components });
       await interaction.reply({ content: 'ロール選択パネルを設置しました！', ephemeral: true });
-    }
-    else if (interaction.customId === 'start_verify') {
-      const user = interaction.user;
-      const accountAgeDays = (Date.now() - user.createdTimestamp) / (1000 * 60 * 60 * 24);
-
-      if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
-        return interaction.reply({ content: `❌ アカウント作成から ${MIN_ACCOUNT_AGE_DAYS} 日未満のため認証できません。`, ephemeral: true });
-      }
-
-      const code = generateCaptchaCode();
-      activeCaptchas.set(user.id, code);
-
-      const imageBuffer = createCaptchaImage(code);
-      const attachment = new AttachmentBuilder(imageBuffer, { name: 'captcha.png' });
-
-      const embed = new EmbedBuilder()
-        .setTitle('画像認証')
-        .setDescription('画像内の6文字を確認し、ボタンから入力してください。')
-        .setImage('attachment://captcha.png')
-        .setColor(0x5865F2);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_verify_modal').setLabel('✏️ 回答を入力する').setStyle(ButtonStyle.Primary)
-      );
-
-      await interaction.reply({ embeds: [embed], files: [attachment], components: [row], ephemeral: true });
-    }
-    else if (interaction.customId === 'open_verify_modal') {
-      const modal = new ModalBuilder()
-        .setCustomId('verify_modal')
-        .setTitle('メンバー認証（画像入力）');
-
-      const textInput = new TextInputBuilder()
-        .setCustomId('verify_code_input')
-        .setLabel('6文字を入力してください')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(6)
-        .setMinLength(6);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-      await interaction.showModal(modal);
     }
     else if (interaction.customId.startsWith('toggle_role_')) {
       const roleId = interaction.customId.replace('toggle_role_', '');
@@ -1529,30 +1557,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   else if (interaction.isModalSubmit()) {
-    if (interaction.customId === 'verify_modal') {
-      const userInput = interaction.fields.getTextInputValue('verify_code_input').trim();
-      const expectedCode = activeCaptchas.get(interaction.user.id);
-
-      if (!expectedCode || userInput.toUpperCase() !== expectedCode) {
-        return interaction.reply({ content: '❌ 認証コードが間違っています。', ephemeral: true });
-      }
-
-      activeCaptchas.delete(interaction.user.id);
-      const settings = getGuildSettings(guild.id);
-
-      if (settings.verifyRoleId) {
-        try {
-          await interaction.member.roles.add(settings.verifyRoleId);
-          await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
-          await sendLog(guild, interaction.member, 'メンバー認証成功', `${interaction.user.tag} が画像認証をクリアしました。`);
-        } catch (e) {
-          await interaction.reply({ content: '⚠️ ロールの付与に失敗しました。', ephemeral: true });
-        }
-      } else {
-        await interaction.reply({ content: '✅ 認証に成功しました！', ephemeral: true });
-      }
-    }
-    else if (interaction.customId === 'pin_setup_modal') {
+    if (interaction.customId === 'pin_setup_modal') {
       const introText = interaction.fields.getTextInputValue('pin_intro_text') || '📌 ピン留めされた重要メッセージ一覧';
       await interaction.deferReply({ ephemeral: true });
 

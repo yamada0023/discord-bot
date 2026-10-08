@@ -16,6 +16,7 @@
     "@napi-rs/canvas": "^1.0.10",
     "discord-api-types": "^0.38.56",
     "discord.js": "^14.27.0",
+    "express": "^5.2.1",
     "google-tts-api": "^2.0.2"
   }
 }
