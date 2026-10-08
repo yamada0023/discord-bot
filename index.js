@@ -67,12 +67,18 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
     }
 
+    // ▼▼▼ 【修正】 token_type と access_token の間に半角スペースを追加 ▼▼▼
     const userResponse = await fetch('https://discord.com/api/users/@me', {
       headers: {
         authorization: `${tokenData.token_type}${tokenData.access_token}`,
       },
     });
     const userData = await userResponse.json();
+
+    if (!userData.id) {
+      console.log('ユーザー情報取得失敗:', userData);
+      return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
+    }
 
     const userCreatedAt = new Date(Number(BigInt(userData.id) >> 22n) + 1420070400000);
     const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
@@ -1425,7 +1431,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         .setDescription('下のボタンを押して、ブラウザから安全に認証を行ってください。')
         .setColor(0x00FF00);
 
-      // ▼▼▼ Render上の実際のURLに変更済み ▼▼▼
       const verifyWebUrl = `https://discord-bot-5evs.onrender.com/verify?guild=${guild.id}`;
 
       const row = new ActionRowBuilder().addComponents(
