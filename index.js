@@ -159,7 +159,7 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント（詳細な失敗ログ出力対応）
+// 3. Discordからのコールバック受信用エンドポイント（詳細な失敗ログ出力＆チャンネル通知対応）
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
@@ -172,11 +172,26 @@ app.get('/callback', async (req, res) => {
   // IPアドレスの取得（Render等のプロキシ環境を考慮）
   const clientIp = req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : req.socket.remoteAddress;
 
+  // stateからguildIdを先行取得（失敗ログを該当サーバーに飛ばすため）
+  let guildId, fingerprint = 'unknown';
+  try {
+    const stateData = JSON.parse(stateRaw || '{}');
+    guildId = stateData.guild;
+    fingerprint = stateData.fp || 'unknown';
+  } catch (e) {
+    guildId = [...client.guilds.cache.keys()][0];
+  }
+
+  const guild = client.guilds.cache.get(guildId) || client.guilds.cache.first();
+
   try {
     // ① VPN / プロキシ / データセンター検知
     const isVpn = await checkVpnOrProxy(clientIp);
     if (isVpn) {
       console.warn(`[認証失敗: VPN検知] IP: ${clientIp} からのアクセスがブロックされました。`);
+      if (guild) {
+        sendLog(guild, { user: { displayAvatarURL: () => '' } }, '❌ Web認証失敗 (VPN検知)', `IP: ${clientIp}\n理由: VPNまたはプロキシ経由からのアクセスが検知されました。`, 0xFF4500);
+      }
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -219,20 +234,16 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
     }
 
-    // ② 状態（guildId と ブラウザフィンガープリンティング）の復元
-    let guildId, fingerprint = 'unknown';
-    try {
-      const stateData = JSON.parse(stateRaw || '{}');
-      guildId = stateData.guild;
-      fingerprint = stateData.fp || 'unknown';
-    } catch (e) {
-      guildId = [...client.guilds.cache.keys()][0];
-    }
+    // メンバーオブジェクトの取得（失敗ログ通知用）
+    const member = guild ? await guild.members.fetch(userData.id).catch(() => null) : null;
 
-    // ③ マルチアカウント（同一IPまたは同一ブラウザ端末からの別アカウント認証）検知
+    // ② マルチアカウント（同一IPまたは同一ブラウザ端末からの別アカウント認証）検知
     const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
     if (isMultiAccount) {
       console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}`);
+      if (guild && member) {
+        sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: 同一のネットワーク環境または端末（ブラウザ）からすでに別のアカウントが認証されています。`, 0xFF4500);
+      }
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -243,12 +254,15 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    // ④ アカウント作成日数のチェック（サブ垢対策）
+    // ③ アカウント作成日数のチェック（サブ垢対策）
     const userCreatedAt = new Date(Number(BigInt(userData.id) >> 22n) + 1420070400000);
     const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
 
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
       console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
+      if (guild && member) {
+        sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
+      }
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -259,16 +273,13 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    const guild = client.guilds.cache.get(guildId) || client.guilds.cache.first();
-
     if (guild) {
-      const member = await guild.members.fetch(userData.id).catch(() => null);
       const settings = getGuildSettings(guild.id);
 
       if (member && settings.verifyRoleId) {
         await member.roles.add(settings.verifyRoleId);
         
-        sendLog(guild, member, 'Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`);
+        sendLog(guild, member, '✅ Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
 
         return res.send(`
           <html>
@@ -567,7 +578,7 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setColor(color)
-      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+      .setThumbnail(member.user.displayAvatarURL ? member.user.displayAvatarURL({ dynamic: true }) : null)
       .setDescription(description)
       .setTimestamp();
 
