@@ -8,11 +8,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-// 環境変数（RenderやReplit、VPS等で設定するもの）
-// CLIENT_ID, CLIENT_SECRET, REDIRECT_URI が必要になります
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-// 例: https://your-bot-domain.com/callback
 const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI;
 
 app.use(express.urlencoded({ extended: true }));
@@ -38,7 +35,6 @@ app.get('/verify', (req, res) => {
     return res.status(400).send('エラー: サーバーID（guild）が指定されていません。');
   }
 
-  // DiscordのOAuth2認証画面へ飛ばす
   const oauthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
   
   res.redirect(oauthUrl);
@@ -52,7 +48,6 @@ app.get('/callback', async (req, res) => {
   }
 
   try {
-    // 1. アクセストークンの取得
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       body: new URLSearchParams({
@@ -72,7 +67,6 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
     }
 
-    // 2. 認証したユーザー情報の取得
     const userResponse = await fetch('https://discord.com/api/users/@me', {
       headers: {
         authorization: `${tokenData.token_type}${tokenData.access_token}`,
@@ -94,7 +88,6 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    // 3. Botが参加しているDiscordサーバー（Guild）のメンバーにロールを付与する処理
     const guildId = [...client.guilds.cache.keys()][0];
     const guild = client.guilds.cache.get(guildId);
 
@@ -165,9 +158,7 @@ const {
 
 const { createCanvas } = require('@napi-rs/canvas');
 
-// 外部ファイル（tts.js）から読み上げ処理および辞書管理をインポート
 const { processQueue, loadDictionary, saveDictionary } = require('./tts.js');
-// 外部ファイル（animalIcon.js）から動物アイコン生成関数をインポート
 const { generateAnimalIcon } = require('./animalIcon.js');
 
 
@@ -285,7 +276,7 @@ const readingSessions = new Map();
 
 
 // ============================================================
-// ステータス（人数カウント）チャンネルの自動更新関数（レートリミット対策版）
+// ステータス（人数カウント）チャンネルの自動更新関数
 // ============================================================
 
 const lastStatUpdateTimes = new Map();
@@ -805,7 +796,7 @@ client.once(Events.ClientReady, async (c) => {
 
 
 // ============================================================
-// イベント: ピン留めが更新されたときに埋め込みを自動編集
+// イベント: ピン留め更新
 // ============================================================
 
 client.on(Events.ChannelPinsUpdate, async (channel, time) => {
@@ -814,7 +805,7 @@ client.on(Events.ChannelPinsUpdate, async (channel, time) => {
 
 
 // ============================================================
-// イベント: メンバーの参加・退出時にカウンターを更新
+// イベント: メンバーの参加・退出
 // ============================================================
 
 client.on(Events.GuildMemberAdd, (member) => {
@@ -827,7 +818,7 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室の監視 ＆ 滞在時間自動通知・読み上げ
+// イベント: ボイスチャンネル入退室
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
@@ -1434,7 +1425,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         .setDescription('下のボタンを押して、ブラウザから安全に認証を行ってください。')
         .setColor(0x00FF00);
 
-      const verifyWebUrl = `https://あなたのボットのドメイン.com/verify?guild=${guild.id}`;
+      // ▼▼▼ Render上の実際のURLに変更済み ▼▼▼
+      const verifyWebUrl = `https://discord-bot-5evs.onrender.com/verify?guild=${guild.id}`;
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
