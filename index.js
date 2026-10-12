@@ -159,7 +159,7 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント（詳細な失敗ログ出力＆チャンネル通知対応）
+// 3. Discordからのコールバック受信用エンドポイント
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
@@ -169,10 +169,8 @@ app.get('/callback', async (req, res) => {
     return res.status(400).send('❌ 認証コードが取得できませんでした。');
   }
 
-  // IPアドレスの取得（Render等のプロキシ環境を考慮）
   const clientIp = req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].split(',')[0].trim() : req.socket.remoteAddress;
 
-  // stateからguildIdを先行取得（失敗ログを該当サーバーに飛ばすため）
   let guildId, fingerprint = 'unknown';
   try {
     const stateData = JSON.parse(stateRaw || '{}');
@@ -185,7 +183,7 @@ app.get('/callback', async (req, res) => {
   const guild = client.guilds.cache.get(guildId) || client.guilds.cache.first();
 
   try {
-    // ① VPN / プロキシ / データセンター検知
+    // ① VPN / プロキシ検知
     const isVpn = await checkVpnOrProxy(clientIp);
     if (isVpn) {
       console.warn(`[認証失敗: VPN検知] IP: ${clientIp} からのアクセスがブロックされました。`);
@@ -234,16 +232,30 @@ app.get('/callback', async (req, res) => {
       return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
     }
 
-    // メンバーオブジェクトの取得（失敗ログ通知用）
-    const member = guild ? await guild.members.fetch(userData.id).catch(() => null) : null;
+    if (!guild) {
+      console.error(`[認証エラー] 該当するDiscordサーバーが見つかりませんでした。GuildId: ${guildId}`);
+      return res.status(400).send('❌ 該当するDiscordサーバーが見つかりませんでした。');
+    }
 
-    // ② マルチアカウント（同一IPまたは同一ブラウザ端末からの別アカウント認証）検知
+    const member = await guild.members.fetch(userData.id).catch(() => null);
+    if (!member) {
+      console.error(`[認証エラー] ユーザー(${userData.username})が対象サーバーに参加していません。GuildId: ${guild.id}`);
+      sendLog(guild, { user: userData }, '❌ Web認証失敗 (メンバー未参加)', `ユーザー: ${userData.username} (#${userData.id})\n理由: サーバーに参加していない状態で認証を試みました。`, 0xFF4500);
+      return res.status(400).send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
+            <h1>❌ 認証失敗 (メンバー未参加)</h1>
+            <p>指定されたDiscordサーバーにあなたのアカウントが参加していません。先にサーバーへ参加してから認証を行ってください。</p>
+          </body>
+        </html>
+      `);
+    }
+
+    // ② マルチアカウント検知
     const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
     if (isMultiAccount) {
       console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}`);
-      if (guild && member) {
-        sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: 同一のネットワーク環境または端末（ブラウザ）からすでに別のアカウントが認証されています。`, 0xFF4500);
-      }
+      sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: 同一のネットワーク環境または端末（ブラウザ）からすでに別のアカウントが認証されています。`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -260,9 +272,7 @@ app.get('/callback', async (req, res) => {
 
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
       console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
-      if (guild && member) {
-        sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
-      }
+      sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -273,28 +283,31 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    if (guild) {
-      const settings = getGuildSettings(guild.id);
-
-      if (member && settings.verifyRoleId) {
-        await member.roles.add(settings.verifyRoleId);
-        
-        sendLog(guild, member, '✅ Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
-
-        return res.send(`
-          <html>
-            <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #008000;">
-              <h1>✅ 認証に成功しました！</h1>
-              <p>Discordに戻ってサーバーをお楽しみください。このタブは閉じて構いません。</p>
-            </body>
-          </html>
-        `);
-      } else {
-        console.error(`[認証エラー] サーバー内にメンバーが見つからないか、ロールが未設定です。GuildId: ${guildId}, UserId:${userData.id}`);
-      }
+    // ④ ロール付与の実行
+    const settings = getGuildSettings(guild.id);
+    if (!settings.verifyRoleId) {
+      console.error(`[認証エラー] サーバー(${guild.name})の認証ロールが設定されていません。`);
+      return res.status(500).send('❌ サーバー側で認証ロールが設定されていません。管理者に連絡してください。');
     }
 
-    res.send('<html><body style="text-align:center; padding-top:50px;"><h1>✅ 認証処理が完了しました。</h1><p>Discordをご確認ください。</p></body></html>');
+    try {
+      await member.roles.add(settings.verifyRoleId);
+      
+      sendLog(guild, member, '✅ Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
+
+      return res.send(`
+        <html>
+          <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #008000;">
+            <h1>✅ 認証に成功しました！</h1>
+            <p>Discordに戻ってサーバーをお楽しみください。このタブは閉じて構いません。</p>
+          </body>
+        </html>
+      `);
+    } catch (roleError) {
+      console.error(`[認証エラー] ロール付与に失敗しました:`, roleError);
+      sendLog(guild, member, '❌ Web認証失敗 (権限エラー)', `ユーザー: ${userData.username}\n理由: Botの権限不足によりロールを付与できませんでした。Botのロール順位を確認してください。`, 0xFF4500);
+      return res.status(500).send('❌ ロールの自動付与に失敗しました。Botの権限設定を管理者に確認してください。');
+    }
 
   } catch (error) {
     console.error('[OAuth2コールバック例外エラー]:', error);
@@ -382,7 +395,6 @@ const MIN_ACCOUNT_AGE_DAYS = 7;
 // 永続設定（サーバーごと）
 // ============================================================
 const SETTINGS_FILE = path.join(DATA_DIR, 'bot-settings.json');
-const BIRTHDAYS_FILE = path.join(DATA_DIR, 'birthdays.json');
 
 function loadSettings() {
   try {
@@ -404,11 +416,8 @@ function defaultGuildSettings() {
     userInfoChannelId: null,
     roleIds: ['1537841157315231896'],
     logChannelId: null,
-    birthdayChannelId: null,
     vcLogChannelId: null,
-    readChannelId: null,
-    pinnedEmbedMessageId: null,
-    pinnedEmbedChannelId: null
+    readChannelId: null
   };
 }
 
@@ -426,33 +435,10 @@ function saveSettings() {
   }
 }
 
-function loadBirthdays() {
-  try {
-    if (!fs.existsSync(BIRTHDAYS_FILE)) return {};
-    const raw = fs.readFileSync(BIRTHDAYS_FILE, 'utf8');
-    return JSON.parse(raw || '{}');
-  } catch (error) {
-    console.error('[誕生日] 読み込みエラー:', error);
-    return {};
-  }
-}
-
-const birthdayData = loadBirthdays();
-
-function saveBirthdays() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(BIRTHDAYS_FILE, JSON.stringify(birthdayData, null, 2), 'utf8');
-  } catch (error) {
-    console.error('[誕生日] 保存エラー:', error);
-  }
-}
-
 
 // ============================================================
 // 各種キャッシュ・マップ・キュー管理
 // ============================================================
-const activeCaptchas = new Map();
 const vcJoinTimes = new Map();
 const readingSessions = new Map();
 
@@ -511,53 +497,6 @@ async function updateServerStats(guild) {
     }
   } catch (error) {
     console.error('サーバー統計チャンネル更新エラー:', error);
-  }
-}
-
-
-// ============================================================
-// ピン留め一覧の埋め込みを作成・更新するヘルパー関数
-// ============================================================
-
-async function updatePinnedEmbedForChannel(channel) {
-  if (!channel || channel.type !== ChannelType.GuildText) return;
-  const settings = getGuildSettings(channel.guild.id);
-
-  if (settings.pinnedEmbedChannelId !== channel.id || !settings.pinnedEmbedMessageId) return;
-
-  try {
-    const targetMessage = await channel.messages.fetch(settings.pinnedEmbedMessageId).catch(() => null);
-    if (!targetMessage) return;
-
-    const pinnedMessages = await channel.messages.fetchPinned();
-    const embed = new EmbedBuilder()
-      .setTitle(`📌 ピン留めされた重要メッセージ一覧 (自動更新)`)
-      .setDescription(`チャンネル: <#${channel.id}>`)
-      .setColor(0xFFD700)
-      .setTimestamp();
-
-    if (pinnedMessages.size === 0) {
-      embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
-    } else {
-      let count = 0;
-      for (const [id, msg] of pinnedMessages) {
-        if (count >= 10) break;
-        const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
-        embed.addFields({
-          name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
-          value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
-          inline: false
-        });
-        count++;
-      }
-      if (pinnedMessages.size > 10) {
-        embed.setFooter({ text: `※最新の10件を表示しています (総ピン留め数: ${pinnedMessages.size}件)` });
-      }
-    }
-
-    await targetMessage.edit({ embeds: [embed] });
-  } catch (error) {
-    console.error('ピン留め埋め込みの自動更新エラー:', error);
   }
 }
 
@@ -714,32 +653,6 @@ function buildRoleAdminPanel(guild) {
   };
 }
 
-function buildBirthdayAdminPanel(guild) {
-  const settings = getGuildSettings(guild.id);
-  const embed = new EmbedBuilder()
-    .setTitle('⚙️ お誕生日お祝い機能 管理ダッシュボード')
-    .setColor(0x5865F2)
-    .addFields({
-      name: 'お祝いメッセージ送信チャンネル',
-      value: settings.birthdayChannelId ? `<#${settings.birthdayChannelId}>` : '未設定'
-    });
-
-  const channelSelectRow = new ActionRowBuilder()
-    .addComponents(
-      new ChannelSelectMenuBuilder()
-        .setCustomId('select_birthday_channel')
-        .setPlaceholder('お祝いメッセージを送るチャンネルを選択')
-        .setChannelTypes(ChannelType.GuildText)
-        .setMinValues(1)
-        .setMaxValues(1)
-    );
-
-  return {
-    embeds: [embed],
-    components: [channelSelectRow]
-  };
-}
-
 function buildVcLogAdminPanel(guild) {
   const settings = getGuildSettings(guild.id);
   const embed = new EmbedBuilder()
@@ -764,56 +677,6 @@ function buildVcLogAdminPanel(guild) {
     embeds: [embed],
     components: [channelSelectRow]
   };
-}
-
-
-// ============================================================
-// 定期チェッカー（お誕生日）
-// ============================================================
-
-function startScheduledTasks(c) {
-  setInterval(async () => {
-    const now = new Date();
-    const month = now.getMonth() + 1;
-    const day = now.getDate();
-
-    for (const [guildId, guildSettingsMap] of Object.entries(botSettings)) {
-      const guild = c.guilds.cache.get(guildId);
-      if (!guild) continue;
-
-      const birthdayChannelId = guildSettingsMap.birthdayChannelId;
-      if (birthdayChannelId) {
-        const channel = guild.channels.cache.get(birthdayChannelId);
-        if (channel) {
-          const guildBirthdays = birthdayData[guildId] || {};
-          for (const [userId, bday] of Object.entries(guildBirthdays)) {
-            if (bday.month === month && bday.day === day) {
-              const todayKey = `${now.getFullYear()}-${month}-${day}`;
-              if (bday.lastCelebrated === todayKey) continue;
-
-              try {
-                const member = await guild.members.fetch(userId).catch(() => null);
-                if (member) {
-                  const embed = new EmbedBuilder()
-                    .setTitle('🎉 お誕生日おめでとうございます！ 🎂')
-                    .setDescription(`本日は <@${userId}> さんのお誕生日です！素敵な1年になりますように！✨`)
-                    .setColor(0xFF73FA)
-                    .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
-                    .setTimestamp();
-
-                  await channel.send({ content: `<@${userId}>`, embeds: [embed] });
-                  bday.lastCelebrated = todayKey;
-                  saveBirthdays();
-                }
-              } catch (err) {
-                console.error('誕生日お祝いメッセージ送信エラー:', err);
-              }
-            }
-          }
-        }
-      }
-    }
-  }, 1000 * 60);
 }
 
 
@@ -875,10 +738,6 @@ client.once(Events.ClientReady, async (c) => {
       .setDescription('認証の設定管理画面を表示します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
-      .setName('setup-birthday')
-      .setDescription('お誕生日機能の設定管理画面を表示します（管理者限定）')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
       .setName('setup-vc-log')
       .setDescription('VC退出ログの出力先チャンネルを設定します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -886,17 +745,6 @@ client.once(Events.ClientReady, async (c) => {
       .setName('setup-ticket')
       .setDescription('チケット作成パネルを指定チャンネルに設置します（管理者限定）')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-      .setName('pin')
-      .setDescription('ピン留め一覧の管理を行います')
-      .addSubcommand(sub =>
-        sub.setName('setup')
-          .setDescription('入力フォーム（モーダル）を開き、自動更新されるピン留め一覧メッセージを設置します（管理者限定）')
-      )
-      .addSubcommand(sub =>
-        sub.setName('list')
-          .setDescription('現在のピン留め一覧を一時表示します')
-      ),
     new SlashCommandBuilder()
       .setName('no-role')
       .setDescription('メンバーロール（認証ロール等）がついていないメンバーの一覧を表示します（管理者限定）')
@@ -913,20 +761,6 @@ client.once(Events.ClientReady, async (c) => {
     new SlashCommandBuilder()
       .setName('vc-time')
       .setDescription('現在VCに参加しているメンバーの滞在時間を確認します（誰でも利用可）'),
-    new SlashCommandBuilder()
-      .setName('birthday')
-      .setDescription('自分の誕生日を登録したり確認します')
-      .addSubcommand(sub =>
-        sub.setName('set')
-          .setDescription('誕生日を登録します')
-          .addIntegerOption(o => o.setName('month').setDescription('誕生月の数字 (1〜12)').setRequired(true).setMinValue(1).setMaxValue(12))
-          .addIntegerOption(o => o.setName('day').setDescription('誕生日の数字 (1〜31)').setRequired(true).setMinValue(1).setMaxValue(31))
-      )
-      .addSubcommand(sub =>
-        sub.setName('show')
-          .setDescription('登録されている誕生日を確認します')
-          .addUserOption(o => o.setName('user').setDescription('確認したいユーザー（省略時は自分）').setRequired(false))
-      ),
     new SlashCommandBuilder()
       .setName('join')
       .setDescription('ボットを指定したボイスチャンネルに参加させ、このチャンネルの読み上げを開始します')
@@ -972,17 +806,6 @@ client.once(Events.ClientReady, async (c) => {
   } catch (error) {
     console.error('[スラッシュコマンド] 登録エラー:', error);
   }
-
-  startScheduledTasks(c);
-});
-
-
-// ============================================================
-// イベント: ピン留め更新
-// ============================================================
-
-client.on(Events.ChannelPinsUpdate, async (channel, time) => {
-  await updatePinnedEmbedForChannel(channel);
 });
 
 
@@ -1188,14 +1011,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
     }
 
-    else if (commandName === 'setup-birthday') {
-      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
-      }
-      const panel = buildBirthdayAdminPanel(guild);
-      await interaction.reply({ embeds: panel.embeds, components: panel.components, ephemeral: true });
-    }
-
     else if (commandName === 'setup-vc-log') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
@@ -1223,66 +1038,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.channel.send({ embeds: [embed], components: [row] });
       await interaction.reply({ content: 'チケット作成パネルをこのチャンネルに設置しました！', ephemeral: true });
-    }
-
-    else if (commandName === 'pin') {
-      const subcommand = interaction.options.getSubcommand();
-
-      if (subcommand === 'setup') {
-        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-          return interaction.reply({ content: '管理者権限が必要です。', ephemeral: true });
-        }
-
-        const modal = new ModalBuilder()
-          .setCustomId('pin_setup_modal')
-          .setTitle('ピン留め一覧メッセージの設定');
-
-        const textInput = new TextInputBuilder()
-          .setCustomId('pin_intro_text')
-          .setLabel('埋め込みに表示するタイトルやメモ（任意）')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('例: 📌 チャンネルの重要なお知らせ一覧')
-          .setRequired(false);
-
-        modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-        return await interaction.showModal(modal);
-      }
-      else if (subcommand === 'list') {
-        await interaction.deferReply({ ephemeral: true });
-
-        try {
-          const pinnedMessages = await interaction.channel.messages.fetchPinned();
-          const embed = new EmbedBuilder()
-            .setTitle(`📌 ピン留めされた重要メッセージ一覧`)
-            .setDescription(`チャンネル: <#${interaction.channel.id}>`)
-            .setColor(0xFFD700)
-            .setTimestamp();
-
-          if (pinnedMessages.size === 0) {
-            embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
-          } else {
-            let count = 0;
-            for (const [id, msg] of pinnedMessages) {
-              if (count >= 10) break;
-              const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
-              embed.addFields({
-                name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
-                value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
-                inline: false
-              });
-              count++;
-            }
-            if (pinnedMessages.size > 10) {
-              embed.setFooter({ text: `※最新の10件を表示しています (総ピン留め数: ${pinnedMessages.size}件)` });
-            }
-          }
-
-          await interaction.editReply({ embeds: [embed] });
-        } catch (error) {
-          console.error('ピン留め一覧取得エラー:', error);
-          await interaction.editReply({ content: '❌ ピン留め一覧の取得に失敗しました。' });
-        }
-      }
     }
 
     else if (commandName === 'no-role') {
@@ -1386,36 +1141,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } catch (error) {
         console.error('自己紹介チェックエラー:', error);
         await interaction.editReply({ content: '❌ 自己紹介チャンネルのメッセージ取得に失敗しました。' });
-      }
-    }
-
-    else if (commandName === 'birthday') {
-      const subcommand = interaction.options.getSubcommand();
-
-      if (subcommand === 'set') {
-        const month = interaction.options.getInteger('month');
-        const day = interaction.options.getInteger('day');
-
-        const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        if (day > daysInMonth[month]) {
-          return interaction.reply({ content: `❌ ${month}月に ${day}日 は存在しません。`, ephemeral: true });
-        }
-
-        if (!birthdayData[guild.id]) birthdayData[guild.id] = {};
-        birthdayData[guild.id][interaction.user.id] = { month, day, lastCelebrated: null };
-        saveBirthdays();
-
-        await interaction.reply({ content: `🎂 あなたの誕生日を **${month}月${day}日** に登録しました！`, ephemeral: true });
-      } 
-      else if (subcommand === 'show') {
-        const targetUser = interaction.options.getUser('user') || interaction.user;
-        const guildBdays = birthdayData[guild.id] || {};
-        const bday = guildBdays[targetUser.id];
-
-        if (!bday) {
-          return interaction.reply({ content: '誕生日は登録されていません。', ephemeral: true });
-        }
-        await interaction.reply({ content: `📅 **${targetUser.tag}** さんのお誕生日：**${bday.month}月${bday.day}日**`, ephemeral: true });
       }
     }
 
@@ -1584,11 +1309,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       saveSettings();
       await interaction.update(buildRoleAdminPanel(guild));
     }
-    else if (interaction.customId === 'select_birthday_channel') {
-      settings.birthdayChannelId = interaction.values[0];
-      saveSettings();
-      await interaction.update(buildBirthdayAdminPanel(guild));
-    }
     else if (interaction.customId === 'select_vc_log_channel') {
       settings.vcLogChannelId = interaction.values[0];
       saveSettings();
@@ -1726,50 +1446,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           console.error('チケット削除エラー:', err);
         }
       }, 5000);
-    }
-  }
-
-  else if (interaction.isModalSubmit()) {
-    if (interaction.customId === 'pin_setup_modal') {
-      const introText = interaction.fields.getTextInputValue('pin_intro_text') || '📌 ピン留めされた重要メッセージ一覧';
-      await interaction.deferReply({ ephemeral: true });
-
-      try {
-        const pinnedMessages = await interaction.channel.messages.fetchPinned();
-        const embed = new EmbedBuilder()
-          .setTitle(introText)
-          .setDescription(`チャンネル: <#${interaction.channel.id}>`)
-          .setColor(0xFFD700)
-          .setTimestamp();
-
-        if (pinnedMessages.size === 0) {
-          embed.addFields({ name: 'お知らせ', value: 'このチャンネルにはピン留めされたメッセージがありません。' });
-        } else {
-          let count = 0;
-          for (const [id, msg] of pinnedMessages) {
-            if (count >= 10) break;
-            const contentPreview = msg.content ? (msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content) : '[添付ファイル・埋め込みのみ]';
-            embed.addFields({
-              name: `👤 ${msg.author.tag} (${new Date(msg.createdTimestamp).toLocaleDateString()})`,
-              value: `${contentPreview}\n[👉 元のメッセージへジャンプ](${msg.url})`,
-              inline: false
-            });
-            count++;
-          }
-        }
-
-        const sentMessage = await interaction.channel.send({ embeds: [embed] });
-        
-        const settings = getGuildSettings(guild.id);
-        settings.pinnedEmbedChannelId = interaction.channel.id;
-        settings.pinnedEmbedMessageId = sentMessage.id;
-        saveSettings();
-
-        await interaction.editReply({ content: '✅ ピン留め一覧の自動更新メッセージをこのチャンネルに設置しました！今後ピン留めが変更されると、このメッセージが自動で書き換わります。' });
-      } catch (error) {
-        console.error('ピン留めセットアップエラー:', error);
-        await interaction.editReply({ content: '❌ ピン留め一覧の設置に失敗しました。ボットに「メッセージの履歴を読む」や「メッセージ送信」の権限があるか確認してください。' });
-      }
     }
   }
 });
