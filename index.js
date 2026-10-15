@@ -69,12 +69,10 @@ function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
   const existingUserByIp = guildSec.ips[clientIp];
   const existingUserByFp = guildSec.fingerprints[fingerprint];
 
-  // すでに別のユーザーIDで登録されている場合
   if ((existingUserByIp && existingUserByIp !== userId) || (existingUserByFp && existingUserByFp !== userId)) {
     return true;
   }
 
-  // 今回の情報を記録・保存
   guildSec.ips[clientIp] = userId;
   guildSec.fingerprints[fingerprint] = userId;
   saveSecurityLogs();
@@ -96,7 +94,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導
+// 2. 認証ページ
 app.get('/verify', (req, res) => {
   const guildId = req.query.guild;
   if (!guildId) {
@@ -158,7 +156,7 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント
+// 3. コールバック
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
