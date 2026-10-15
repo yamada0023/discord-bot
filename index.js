@@ -400,7 +400,8 @@ function defaultGuildSettings() {
     logChannelId: null,
     vcLogChannelId: null,
     readChannelId: null,
-    ownerOnlineStatus: '🔴 オフライン'
+    ownerOnlineStatus: '🔴 オフライン',
+    lastOwnerStatusChange: 0 // クールタイム管理用タイムスタンプ
   };
 }
 
@@ -408,6 +409,9 @@ function getGuildSettings(guildId) {
   if (!botSettings[guildId]) botSettings[guildId] = defaultGuildSettings();
   if (botSettings[guildId].ownerOnlineStatus === undefined) {
     botSettings[guildId].ownerOnlineStatus = '🔴 オフライン';
+  }
+  if (botSettings[guildId].lastOwnerStatusChange === undefined) {
+    botSettings[guildId].lastOwnerStatusChange = 0;
   }
   return botSettings[guildId];
 }
@@ -725,7 +729,7 @@ client.once(Events.ClientReady, async (c) => {
       ),
     new SlashCommandBuilder()
       .setName('owner-status')
-      .setDescription('鯖主（オーナー）のオンライン・オフライン状態を設定します（鯖主限定）')
+      .setDescription('鯖主（オーナー）のオンライン・オフライン状態を設定します（鯖主限定・クールタイム有）')
       .addStringOption(option =>
         option.setName('status')
           .setDescription('設定する状態')
@@ -955,9 +959,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: '❌ このコマンドはサーバーのオーナー（鯖主）のみ実行できます。', ephemeral: true });
       }
 
-      const status = interaction.options.getString('status');
       const settings = getGuildSettings(guild.id);
+      const now = Date.now();
+      const cooldownTime = 3 * 60 * 1000; // クールタイム: 3分（必要に応じて変更可能）
+
+      if (now - settings.lastOwnerStatusChange < cooldownTime) {
+        const remainingSec = Math.ceil((cooldownTime - (now - settings.lastOwnerStatusChange)) / 1000);
+        const remainingMin = Math.ceil(remainingSec / 60);
+        return interaction.reply({ content: `⏳ クールタイム中です。あと約 ${remainingMin} 分 (${remainingSec}秒) お待ちください。`, ephemeral: true });
+      }
+
+      const status = interaction.options.getString('status');
       settings.ownerOnlineStatus = status;
+      settings.lastOwnerStatusChange = now;
       saveSettings();
 
       await updateServerStats(guild);
