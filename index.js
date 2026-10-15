@@ -1,5 +1,5 @@
 // ============================================================
-// Webサーバー & OAuth2 認証設定 (Express)[cite: 1]
+// Webサーバー & OAuth2 認証設定 (Express)
 // ============================================================
 const express = require('express');
 const app = express();
@@ -16,7 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 // ============================================================
-// セキュリティ・認証履歴の永続化管理 & 検知システム[cite: 1]
+// セキュリティ・認証履歴の永続化管理 & 検知システム
 // ============================================================
 const DATA_DIR = path.join(__dirname, 'data');
 const SECURITY_FILE = path.join(DATA_DIR, 'security-logs.json');
@@ -44,7 +44,7 @@ function saveSecurityLogs() {
   }
 }
 
-// VPN / プロキシ検知関数[cite: 1]
+// VPN / プロキシ検知関数
 async function checkVpnOrProxy(clientIp) {
   if (!clientIp || clientIp === '127.0.0.1' || clientIp === '::1') return false;
   try {
@@ -59,7 +59,7 @@ async function checkVpnOrProxy(clientIp) {
   return false;
 }
 
-// マルチアカウント（IP / フィンガープリンティング）紐付けチェック[cite: 1]
+// マルチアカウント（IP / フィンガープリンティング）紐付けチェック
 function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
   if (!securityData[guildId]) {
     securityData[guildId] = { ips: {}, fingerprints: {} };
@@ -83,7 +83,7 @@ function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
 }
 
 
-// 1. Botの生存確認用[cite: 1]
+// 1. Botの生存確認用
 app.get('/', (req, res) => {
   res.send(`
     <html>
@@ -96,7 +96,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導[cite: 1]
+// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導
 app.get('/verify', (req, res) => {
   const guildId = req.query.guild;
   if (!guildId) {
@@ -158,7 +158,7 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント[cite: 1]
+// 3. Discordからのコールバック受信用エンドポイント
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
@@ -317,7 +317,7 @@ app.listen(process.env.PORT || 3000, () => {
 
 
 // ============================================================
-// Discord.js & @discordjs/voice & Canvas ＆ 外部モジュール[cite: 1]
+// Discord.js & @discordjs/voice & Canvas ＆ 外部モジュール
 // ============================================================
 
 const {
@@ -355,7 +355,7 @@ const { generateAnimalIcon } = require('./animalIcon.js');
 
 
 // ============================================================
-// Discord Client[cite: 1]
+// Discord Client
 // ============================================================
 
 const client = new Client({
@@ -376,7 +376,7 @@ const client = new Client({
 
 
 // ============================================================
-// 永続設定（サーバーごと）[cite: 1]
+// 永続設定（サーバーごと）
 // ============================================================
 const SETTINGS_FILE = path.join(DATA_DIR, 'bot-settings.json');
 
@@ -402,14 +402,14 @@ function defaultGuildSettings() {
     logChannelId: null,
     vcLogChannelId: null,
     readChannelId: null,
-    ownerOnlineStatus: 'オフライン' // 鯖主のオンライン設定初期値
+    ownerOnlineStatus: '🔴 オフライン'
   };
 }
 
 function getGuildSettings(guildId) {
   if (!botSettings[guildId]) botSettings[guildId] = defaultGuildSettings();
   if (botSettings[guildId].ownerOnlineStatus === undefined) {
-    botSettings[guildId].ownerOnlineStatus = 'オフライン';
+    botSettings[guildId].ownerOnlineStatus = '🔴 オフライン';
   }
   return botSettings[guildId];
 }
@@ -425,14 +425,14 @@ function saveSettings() {
 
 
 // ============================================================
-// 各種キャッシュ・マップ・キュー管理[cite: 1]
+// 各種キャッシュ・マップ・キュー管理
 // ============================================================
 const vcJoinTimes = new Map();
 const readingSessions = new Map();
 
 
 // ============================================================
-// ステータス（人数カウンター）チャンネルの自動更新関数[cite: 1]
+// ステータス（人数カウンター）チャンネルの自動更新関数
 // ============================================================
 
 const lastStatUpdateTimes = new Map();
@@ -465,9 +465,8 @@ async function updateServerStats(guild) {
       }
     }
 
-    // サーバー設定から鯖主のステータスを取得
     const settings = getGuildSettings(guild.id);
-    const ownerStatusText = settings.ownerOnlineStatus || 'オフライン';
+    const ownerStatusText = settings.ownerOnlineStatus || '🔴 オフライン';
 
     for (const [channelId, channel] of guild.channels.cache) {
       if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
@@ -497,7 +496,7 @@ async function updateServerStats(guild) {
 
 
 // ============================================================
-// 認証ログ[cite: 1]
+// 認証ログ
 // ============================================================
 
 async function sendLog(guild, member, title, description, color = 0x00FF00) {
@@ -524,7 +523,7 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
 
 
 // ============================================================
-// パネル生成用関数[cite: 1]
+// パネル生成用関数
 // ============================================================
 
 function buildRolePanelComponents(guild) {
@@ -676,7 +675,7 @@ function buildVcLogAdminPanel(guild) {
 
 
 // ============================================================
-// イベント: 準備完了[cite: 1]
+// イベント: 準備完了
 // ============================================================
 
 client.once(Events.ClientReady, async (c) => {
@@ -732,10 +731,10 @@ client.once(Events.ClientReady, async (c) => {
           .setDescription('設定する状態')
           .setRequired(true)
           .addChoices(
-            { name: 'オンライン', value: 'オンライン' },
-            { name: 'オフライン', value: 'オフライン' },
-            { name: '取り込み中', value: '取り込み中' },
-            { name: '退席中', value: '退席中' }
+            { name: 'オンライン', value: '🟢 オンライン' },
+            { name: 'オフライン', value: '🔴 オフライン' },
+            { name: '取り込み中', value: '🟡 取り込み中' },
+            { name: '退席中', value: '🟠 退席中' }
           )
       ),
     new SlashCommandBuilder()
@@ -819,7 +818,7 @@ client.once(Events.ClientReady, async (c) => {
 
 
 // ============================================================
-// イベント: メンバーの参加・退出[cite: 1]
+// イベント: メンバーの参加・退出
 // ============================================================
 
 client.on(Events.GuildMemberAdd, (member) => {
@@ -832,7 +831,7 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室[cite: 1]
+// イベント: ボイスチャンネル入退室
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
@@ -895,7 +894,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
 
 // ============================================================
-// イベント: メッセージ受信[cite: 1]
+// イベント: メッセージ受信
 // ============================================================
 
 client.on(Events.MessageCreate, async (message) => {
@@ -921,7 +920,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 
 // ============================================================
-// イベント: インタラクション処理[cite: 1]
+// イベント: インタラクション処理
 // ============================================================
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -952,7 +951,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     else if (commandName === 'owner-status') {
-      // 鯖主（サーバーオーナー）かどうかチェック
       if (interaction.user.id !== guild.ownerId) {
         return interaction.reply({ content: '❌ このコマンドはサーバーのオーナー（鯖主）のみ実行できます。', ephemeral: true });
       }
@@ -962,7 +960,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       settings.ownerOnlineStatus = status;
       saveSettings();
 
-      // カウンターチャンネルを即時更新
       await updateServerStats(guild);
 
       await interaction.reply({ content: `✅ 鯖主のステータスを **「${status}」** に設定しました！人数カウンターを更新しました。`, ephemeral: true });
@@ -1478,7 +1475,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 // ============================================================
-// ログイン処理[cite: 1]
+// ログイン処理
 // ============================================================
 
 client.login(process.env.DISCORD_TOKEN);
