@@ -483,7 +483,9 @@ async function updateServerStats(guild) {
           if (name !== newName) await channel.setName(newName).catch(() => {});
         } else if (name.includes('鯖主:')) {
           const newName = `鯖主: ${ownerStatusText}`;
-          if (name !== newName) await channel.setName(newName).catch(() => {});
+          if (name !== newName) {
+            await channel.setName(newName).catch(err => console.log('鯖主チャンネル名変更エラー:', err));
+          }
         }
       }
     }
