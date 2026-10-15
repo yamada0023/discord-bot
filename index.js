@@ -1,5 +1,5 @@
 // ============================================================
-// Webサーバー & OAuth2 認証設定 (Express)
+// Webサーバー & OAuth2 認証設定 (Express)[cite: 1]
 // ============================================================
 const express = require('express');
 const app = express();
@@ -16,7 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 // ============================================================
-// セキュリティ・認証履歴の永続化管理 & 検知システム
+// セキュリティ・認証履歴の永続化管理 & 検知システム[cite: 1]
 // ============================================================
 const DATA_DIR = path.join(__dirname, 'data');
 const SECURITY_FILE = path.join(DATA_DIR, 'security-logs.json');
@@ -44,7 +44,7 @@ function saveSecurityLogs() {
   }
 }
 
-// VPN / プロキシ検知関数
+// VPN / プロキシ検知関数[cite: 1]
 async function checkVpnOrProxy(clientIp) {
   if (!clientIp || clientIp === '127.0.0.1' || clientIp === '::1') return false;
   try {
@@ -59,7 +59,7 @@ async function checkVpnOrProxy(clientIp) {
   return false;
 }
 
-// マルチアカウント（IP / フィンガープリンティング）紐付けチェック
+// マルチアカウント（IP / フィンガープリンティング）紐付けチェック[cite: 1]
 function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
   if (!securityData[guildId]) {
     securityData[guildId] = { ips: {}, fingerprints: {} };
@@ -83,7 +83,7 @@ function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
 }
 
 
-// 1. Botの生存確認用
+// 1. Botの生存確認用[cite: 1]
 app.get('/', (req, res) => {
   res.send(`
     <html>
@@ -96,14 +96,13 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導
+// 2. 認証ページ（ブラウザフィンガープリンティング収集用フロントエンド）への誘導[cite: 1]
 app.get('/verify', (req, res) => {
   const guildId = req.query.guild;
   if (!guildId) {
     return res.status(400).send('エラー: サーバーID（guild）が指定されていません。');
   }
 
-  // ブラウザ側でフィンガープリンティングを生成してからDiscordのOAuth2へ転送するHTMLを返す
   res.send(`
     <html>
       <head>
@@ -159,7 +158,7 @@ app.get('/verify', (req, res) => {
   `);
 });
 
-// 3. Discordからのコールバック受信用エンドポイント
+// 3. Discordからのコールバック受信用エンドポイント[cite: 1]
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   const stateRaw = req.query.state;
@@ -183,7 +182,6 @@ app.get('/callback', async (req, res) => {
   const guild = client.guilds.cache.get(guildId) || client.guilds.cache.first();
 
   try {
-    // ① VPN / プロキシ検知
     const isVpn = await checkVpnOrProxy(clientIp);
     if (isVpn) {
       console.warn(`[認証失敗: VPN検知] IP: ${clientIp} からのアクセスがブロックされました。`);
@@ -251,7 +249,6 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    // ② マルチアカウント検知
     const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
     if (isMultiAccount) {
       console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}`);
@@ -266,10 +263,10 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    // ③ アカウント作成日数のチェック（サブ垢対策）
     const userCreatedAt = new Date(Number(BigInt(userData.id) >> 22n) + 1420070400000);
     const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
 
+    const MIN_ACCOUNT_AGE_DAYS = 7;
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
       console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
       sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
@@ -283,7 +280,6 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    // ④ ロール付与の実行
     const settings = getGuildSettings(guild.id);
     if (!settings.verifyRoleId) {
       console.error(`[認証エラー] サーバー(${guild.name})の認証ロールが設定されていません。`);
@@ -321,7 +317,7 @@ app.listen(process.env.PORT || 3000, () => {
 
 
 // ============================================================
-// Discord.js & @discordjs/voice & Canvas ＆ 外部モジュール
+// Discord.js & @discordjs/voice & Canvas ＆ 外部モジュール[cite: 1]
 // ============================================================
 
 const {
@@ -359,7 +355,7 @@ const { generateAnimalIcon } = require('./animalIcon.js');
 
 
 // ============================================================
-// Discord Client
+// Discord Client[cite: 1]
 // ============================================================
 
 const client = new Client({
@@ -380,19 +376,7 @@ const client = new Client({
 
 
 // ============================================================
-// 設定
-// ============================================================
-
-let verifyRoleId = '1537841157315231896';
-let userInfoChannelId = null;
-let roleIds = [
-  '1537841157315231896'
-];
-
-const MIN_ACCOUNT_AGE_DAYS = 7;
-
-// ============================================================
-// 永続設定（サーバーごと）
+// 永続設定（サーバーごと）[cite: 1]
 // ============================================================
 const SETTINGS_FILE = path.join(DATA_DIR, 'bot-settings.json');
 
@@ -417,12 +401,16 @@ function defaultGuildSettings() {
     roleIds: ['1537841157315231896'],
     logChannelId: null,
     vcLogChannelId: null,
-    readChannelId: null
+    readChannelId: null,
+    ownerOnlineStatus: 'オフライン' // 鯖主のオンライン設定初期値
   };
 }
 
 function getGuildSettings(guildId) {
   if (!botSettings[guildId]) botSettings[guildId] = defaultGuildSettings();
+  if (botSettings[guildId].ownerOnlineStatus === undefined) {
+    botSettings[guildId].ownerOnlineStatus = 'オフライン';
+  }
   return botSettings[guildId];
 }
 
@@ -437,14 +425,14 @@ function saveSettings() {
 
 
 // ============================================================
-// 各種キャッシュ・マップ・キュー管理
+// 各種キャッシュ・マップ・キュー管理[cite: 1]
 // ============================================================
 const vcJoinTimes = new Map();
 const readingSessions = new Map();
 
 
 // ============================================================
-// ステータス（人数カウント）チャンネルの自動更新関数
+// ステータス（人数カウンター）チャンネルの自動更新関数[cite: 1]
 // ============================================================
 
 const lastStatUpdateTimes = new Map();
@@ -477,6 +465,10 @@ async function updateServerStats(guild) {
       }
     }
 
+    // サーバー設定から鯖主のステータスを取得
+    const settings = getGuildSettings(guild.id);
+    const ownerStatusText = settings.ownerOnlineStatus || 'オフライン';
+
     for (const [channelId, channel] of guild.channels.cache) {
       if (channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice) {
         const name = channel.name;
@@ -492,6 +484,9 @@ async function updateServerStats(guild) {
         } else if (name.includes('VC参加中:')) {
           const newName = `VC参加中: ${vcHumanCount}`;
           if (name !== newName) await channel.setName(newName).catch(() => {});
+        } else if (name.includes('鯖主:')) {
+          const newName = `鯖主: ${ownerStatusText}`;
+          if (name !== newName) await channel.setName(newName).catch(() => {});
         }
       }
     }
@@ -502,12 +497,12 @@ async function updateServerStats(guild) {
 
 
 // ============================================================
-// 認証ログ
+// 認証ログ[cite: 1]
 // ============================================================
 
 async function sendLog(guild, member, title, description, color = 0x00FF00) {
   const settings = getGuildSettings(guild.id);
-  const targetChannelId = settings.logChannelId || userInfoChannelId;
+  const targetChannelId = settings.logChannelId || settings.userInfoChannelId;
   if (!targetChannelId) return;
 
   try {
@@ -529,12 +524,12 @@ async function sendLog(guild, member, title, description, color = 0x00FF00) {
 
 
 // ============================================================
-// パネル生成用関数
+// パネル生成用関数[cite: 1]
 // ============================================================
 
 function buildRolePanelComponents(guild) {
   const settings = getGuildSettings(guild.id);
-  const currentRoles = settings.roleIds || roleIds;
+  const currentRoles = settings.roleIds || ['1537841157315231896'];
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
@@ -574,11 +569,11 @@ function buildVerifyAdminPanel(guild) {
       },
       {
         name: 'ログチャンネル',
-        value: (settings.logChannelId || userInfoChannelId) ? `<#${settings.logChannelId || userInfoChannelId}>` : '未設定'
+        value: (settings.logChannelId || settings.userInfoChannelId) ? `<#${settings.logChannelId || settings.userInfoChannelId}>` : '未設定'
       },
       {
         name: 'セキュリティ設定',
-        value: `• サブ垢対策: ${MIN_ACCOUNT_AGE_DAYS}日未満をブロック\n• VPN/プロキシ検知: 有効\n• マルチアカウント検知: 有効`
+        value: `• サブ垢対策: 7日未満をブロック\n• VPN/プロキシ検知: 有効\n• マルチアカウント検知: 有効`
       }
     );
 
@@ -617,7 +612,7 @@ function buildVerifyAdminPanel(guild) {
 
 function buildRoleAdminPanel(guild) {
   const settings = getGuildSettings(guild.id);
-  const currentRoles = settings.roleIds || roleIds;
+  const currentRoles = settings.roleIds || ['1537841157315231896'];
   const roleDisplay = currentRoles.length > 0
     ? currentRoles.map(id => `<@&${id}>`).join('\n')
     : '未設定';
@@ -681,7 +676,7 @@ function buildVcLogAdminPanel(guild) {
 
 
 // ============================================================
-// イベント: 準備完了
+// イベント: 準備完了[cite: 1]
 // ============================================================
 
 client.once(Events.ClientReady, async (c) => {
@@ -728,6 +723,20 @@ client.once(Events.ClientReady, async (c) => {
       .addSubcommand(sub =>
         sub.setName('queue')
           .setDescription('読み上げキューをすべてクリアします')
+      ),
+    new SlashCommandBuilder()
+      .setName('owner-status')
+      .setDescription('鯖主（オーナー）のオンライン・オフライン状態を設定します（鯖主限定）')
+      .addStringOption(option =>
+        option.setName('status')
+          .setDescription('設定する状態')
+          .setRequired(true)
+          .addChoices(
+            { name: 'オンライン', value: 'オンライン' },
+            { name: 'オフライン', value: 'オフライン' },
+            { name: '取り込み中', value: '取り込み中' },
+            { name: '退席中', value: '退席中' }
+          )
       ),
     new SlashCommandBuilder()
       .setName('setup-role')
@@ -810,7 +819,7 @@ client.once(Events.ClientReady, async (c) => {
 
 
 // ============================================================
-// イベント: メンバーの参加・退出
+// イベント: メンバーの参加・退出[cite: 1]
 // ============================================================
 
 client.on(Events.GuildMemberAdd, (member) => {
@@ -823,7 +832,7 @@ client.on(Events.GuildMemberRemove, (member) => {
 
 
 // ============================================================
-// イベント: ボイスチャンネル入退室
+// イベント: ボイスチャンネル入退室[cite: 1]
 // ============================================================
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
@@ -886,7 +895,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
 
 // ============================================================
-// イベント: メッセージ受信
+// イベント: メッセージ受信[cite: 1]
 // ============================================================
 
 client.on(Events.MessageCreate, async (message) => {
@@ -912,7 +921,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 
 // ============================================================
-// イベント: インタラクション処理
+// イベント: インタラクション処理[cite: 1]
 // ============================================================
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -940,6 +949,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
         console.error('アイコン生成エラー:', error);
         await interaction.editReply({ content: '❌ アイコンの生成に失敗しました。' });
       }
+    }
+
+    else if (commandName === 'owner-status') {
+      // 鯖主（サーバーオーナー）かどうかチェック
+      if (interaction.user.id !== guild.ownerId) {
+        return interaction.reply({ content: '❌ このコマンドはサーバーのオーナー（鯖主）のみ実行できます。', ephemeral: true });
+      }
+
+      const status = interaction.options.getString('status');
+      const settings = getGuildSettings(guild.id);
+      settings.ownerOnlineStatus = status;
+      saveSettings();
+
+      // カウンターチャンネルを即時更新
+      await updateServerStats(guild);
+
+      await interaction.reply({ content: `✅ 鯖主のステータスを **「${status}」** に設定しました！人数カウンターを更新しました。`, ephemeral: true });
     }
 
     else if (commandName === 'clear') {
@@ -1452,7 +1478,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 // ============================================================
-// ログイン処理
+// ログイン処理[cite: 1]
 // ============================================================
 
 client.login(process.env.DISCORD_TOKEN);
