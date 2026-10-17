@@ -70,14 +70,15 @@ function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
   const existingUserByFp = guildSec.fingerprints[fingerprint];
 
   if ((existingUserByIp && existingUserByIp !== userId) || (existingUserByFp && existingUserByFp !== userId)) {
-    return true;
+    // 紐付いているメイン・別アカウントのIDを返す（メンション用）
+    return existingUserByIp || existingUserByFp;
   }
 
   guildSec.ips[clientIp] = userId;
   guildSec.fingerprints[fingerprint] = userId;
   saveSecurityLogs();
 
-  return false;
+  return null;
 }
 
 
@@ -236,7 +237,7 @@ app.get('/callback', async (req, res) => {
     const member = await guild.members.fetch(userData.id).catch(() => null);
     if (!member) {
       console.error(`[認証エラー] ユーザー(${userData.username})が対象サーバーに参加していません。GuildId: ${guild.id}`);
-      sendLog(guild, { user: userData }, '❌ Web認証失敗 (メンバー未参加)', `ユーザー: ${userData.username} (#${userData.id})\n理由: サーバーに参加していない状態で認証を試みました。`, 0xFF4500);
+      sendLog(guild, { user: userData }, '❌ Web認証失敗 (メンバー未参加)', `ユーザー: <@${userData.id}> (${userData.username})\n理由: サーバーに参加していない状態で認証を試みました。`, 0xFF4500);
       return res.status(400).send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -247,10 +248,10 @@ app.get('/callback', async (req, res) => {
       `);
     }
 
-    const isMultiAccount = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
-    if (isMultiAccount) {
-      console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}`);
-      sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: 同一のネットワーク環境または端末（ブラウザ）からすでに別のアカウントが認証されています。`, 0xFF4500);
+    const linkedUserId = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
+    if (linkedUserId) {
+      console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}, 紐付け元: ${linkedUserId}`);
+      sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: <@${userData.id}> (${userData.username} / \`${userData.id}\`)\n理由: 同一ネットワーク環境または端末から別アカウント（<@${linkedUserId}>）ですでに認証されています。`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -267,7 +268,7 @@ app.get('/callback', async (req, res) => {
     const MIN_ACCOUNT_AGE_DAYS = 7;
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
       console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
-      sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: ${userData.username} (${userData.id})\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
+      sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: <@${userData.id}> (${userData.username} / \`${userData.id}\`)\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -287,7 +288,7 @@ app.get('/callback', async (req, res) => {
     try {
       await member.roles.add(settings.verifyRoleId);
       
-      sendLog(guild, member, '✅ Web認証成功', `${userData.username} (#${userData.id}) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
+      sendLog(guild, member, '✅ Web認証成功', `<@${userData.id}> (${userData.username} / \`${userData.id}\`) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
 
       return res.send(`
         <html>
@@ -299,7 +300,7 @@ app.get('/callback', async (req, res) => {
       `);
     } catch (roleError) {
       console.error(`[認証エラー] ロール付与に失敗しました:`, roleError);
-      sendLog(guild, member, '❌ Web認証失敗 (権限エラー)', `ユーザー: ${userData.username}\n理由: Botの権限不足によりロールを付与できませんでした。Botのロール順位を確認してください。`, 0xFF4500);
+      sendLog(guild, member, '❌ Web認証失敗 (権限エラー)', `ユーザー: <@${userData.id}> (${userData.username})\n理由: Botの権限不足によりロールを付与できませんでした。Botのロール順位を確認してください。`, 0xFF4500);
       return res.status(500).send('❌ ロールの自動付与に失敗しました。Botの権限設定を管理者に確認してください。');
     }
 
