@@ -70,7 +70,6 @@ function checkMultiAccount(guildId, clientIp, fingerprint, userId) {
   const existingUserByFp = guildSec.fingerprints[fingerprint];
 
   if ((existingUserByIp && existingUserByIp !== userId) || (existingUserByFp && existingUserByFp !== userId)) {
-    // 紐付いているメイン・別アカウントのIDを返す（メンション用）
     return existingUserByIp || existingUserByFp;
   }
 
@@ -237,7 +236,7 @@ app.get('/callback', async (req, res) => {
     const member = await guild.members.fetch(userData.id).catch(() => null);
     if (!member) {
       console.error(`[認証エラー] ユーザー(${userData.username})が対象サーバーに参加していません。GuildId: ${guild.id}`);
-      sendLog(guild, { user: userData }, '❌ Web認証失敗 (メンバー未参加)', `ユーザー: <@${userData.id}> (${userData.username})\n理由: サーバーに参加していない状態で認証を試みました。`, 0xFF4500);
+      sendLog(guild, { user: userData }, '❌ Web認証失敗 (メンバー未参加)', `ユーザー: <@${userData.id}> (\`${userData.id}\`)\n理由: サーバーに参加していない状態で認証を試みました。`, 0xFF4500);
       return res.status(400).send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -251,7 +250,7 @@ app.get('/callback', async (req, res) => {
     const linkedUserId = checkMultiAccount(guildId, clientIp, fingerprint, userData.id);
     if (linkedUserId) {
       console.warn(`[認証失敗: マルチアカウント検知] ユーザー: ${userData.username} (${userData.id}), IP:${clientIp}, 紐付け元: ${linkedUserId}`);
-      sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: <@${userData.id}> (${userData.username} / \`${userData.id}\`)\n理由: 同一ネットワーク環境または端末から別アカウント（<@${linkedUserId}>）ですでに認証されています。`, 0xFF4500);
+      sendLog(guild, member, '❌ Web認証失敗 (マルチアカウント検知)', `ユーザー: <@${userData.id}> (\`${userData.id}\`)\n理由: 同一ネットワーク環境または端末から、別のアカウント（<@${linkedUserId}> / \`${linkedUserId}\`）ですでに認証されています。`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -268,7 +267,7 @@ app.get('/callback', async (req, res) => {
     const MIN_ACCOUNT_AGE_DAYS = 7;
     if (accountAgeDays < MIN_ACCOUNT_AGE_DAYS) {
       console.warn(`[認証失敗: サブアカウント検知] ユーザー: ${userData.username} (${userData.id}), 作成日数: ${accountAgeDays.toFixed(1)}日`);
-      sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: <@${userData.id}> (${userData.username} / \`${userData.id}\`)\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
+      sendLog(guild, member, '❌ Web認証失敗 (サブアカウント検知)', `ユーザー: <@${userData.id}> (\`${userData.id}\`)\n理由: アカウント作成から ${accountAgeDays.toFixed(1)} 日経過（制限: ${MIN_ACCOUNT_AGE_DAYS}日未満）`, 0xFF4500);
       return res.send(`
         <html>
           <body style="font-family: sans-serif; text-align: center; padding-top: 50px; color: #ff4500;">
@@ -288,7 +287,7 @@ app.get('/callback', async (req, res) => {
     try {
       await member.roles.add(settings.verifyRoleId);
       
-      sendLog(guild, member, '✅ Web認証成功', `<@${userData.id}> (${userData.username} / \`${userData.id}\`) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
+      sendLog(guild, member, '✅ Web認証成功', `<@${userData.id}> (\`${userData.id}\`) がWebブラウザ経由の高度なセキュリティ認証をクリアしました。`, 0x00FF00);
 
       return res.send(`
         <html>
@@ -300,7 +299,7 @@ app.get('/callback', async (req, res) => {
       `);
     } catch (roleError) {
       console.error(`[認証エラー] ロール付与に失敗しました:`, roleError);
-      sendLog(guild, member, '❌ Web認証失敗 (権限エラー)', `ユーザー: <@${userData.id}> (${userData.username})\n理由: Botの権限不足によりロールを付与できませんでした。Botのロール順位を確認してください。`, 0xFF4500);
+      sendLog(guild, member, '❌ Web認証失敗 (権限エラー)', `ユーザー: <@${userData.id}> (\`${userData.id}\`)\n理由: Botの権限不足によりロールを付与できませんでした。`, 0xFF4500);
       return res.status(500).send('❌ ロールの自動付与に失敗しました。Botの権限設定を管理者に確認してください。');
     }
 
@@ -402,7 +401,7 @@ function defaultGuildSettings() {
     vcLogChannelId: null,
     readChannelId: null,
     ownerOnlineStatus: '🔴 オフライン',
-    lastOwnerStatusChange: 0 // クールタイム管理用タイムスタンプ
+    lastOwnerStatusChange: 0
   };
 }
 
@@ -714,6 +713,15 @@ client.once(Events.ClientReady, async (c) => {
 
   const commands = [
     new SlashCommandBuilder()
+      .setName('check-user')
+      .setDescription('指定したメンバーのアカウント作成日やサブ垢・マルチ垢の情報を確認します（管理者限定）')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addUserOption(option =>
+        option.setName('target')
+          .setDescription('確認したいメンバー')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
       .setName('animal-icon')
       .setDescription('まったり可愛い動物のアイコン画像をランダムに生成します'),
     new SlashCommandBuilder()
@@ -935,7 +943,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    if (commandName === 'animal-icon') {
+    if (commandName === 'check-user') {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({ content: '❌ 管理者権限が必要です。', ephemeral: true });
+      }
+
+      const targetMember = interaction.options.getMember('target');
+      const targetUser = interaction.options.getUser('target');
+
+      if (!targetUser) {
+        return interaction.reply({ content: '❌ ユーザーが見つかりませんでした。', ephemeral: true });
+      }
+
+      const userCreatedAt = new Date(Number(BigInt(targetUser.id) >> 22n) + 1420070400000);
+      const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
+      const isSubAccount = accountAgeDays < 7;
+
+      // セキュリティログから同一IPやフィンガープリンティングで紐づく別アカウントを検索
+      let linkedUserId = null;
+      const guildSec = securityData[guild.id];
+      if (guildSec) {
+        // IPまたはFPの逆引き
+        for (const [ip, uid] of Object.entries(guildSec.ips || {})) {
+          if (uid === targetUser.id) {
+            // このユーザーが使っているIPで、他のユーザーがいないかチェック
+            for (const [otherIp, otherUid] of Object.entries(guildSec.ips || {})) {
+              if (otherIp === ip && otherUid !== targetUser.id) {
+                linkedUserId = otherUid;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`🔍 ユーザー詳細調査: ${targetUser.tag}`)
+        .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+        .setColor(isSubAccount ? 0xFF4500 : 0x00FF00)
+        .addFields(
+          { name: 'ユーザーメンション', value: `<@${targetUser.id}> (\`${targetUser.id}\`)`, inline: false },
+          { name: 'アカウント作成日', value: `${userCreatedAt.toLocaleString('ja-JP')} (約 ${accountAgeDays.toFixed(1)}日前)`, inline: false },
+          { name: 'サブ垢判定 (7日未満)', value: isSubAccount ? '⚠️ **サブ垢の可能性が高いです (7日未満)**' : '✅ 通常アカウント (7日以上経過)', inline: false },
+          { name: 'マルチアカウント紐付け', value: linkedUserId ? `⚠️ 紐づく別アカウント検知: <@${linkedUserId}> (\`${linkedUserId}\`)` : '🔍 紐づく別アカウントの記録はありません', inline: false }
+        )
+        .setTimestamp();
+
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
+
+    else if (commandName === 'animal-icon') {
       await interaction.deferReply();
       try {
         const buffer = generateAnimalIcon();
@@ -962,7 +1019,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const settings = getGuildSettings(guild.id);
       const now = Date.now();
-      const cooldownTime = 3 * 60 * 1000; // クールタイム: 3分（必要に応じて変更可能）
+      const cooldownTime = 3 * 60 * 1000;
 
       if (now - settings.lastOwnerStatusChange < cooldownTime) {
         const remainingSec = Math.ceil((cooldownTime - (now - settings.lastOwnerStatusChange)) / 1000);
@@ -1470,7 +1527,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.editReply({ content: '❌ チケットチャンネルの作成に失敗しました。' });
       }
     }
-    else if (interaction.customId === 'close_ticket') {
+    else if (interaction.customId.startsWith('close_ticket')) {
       const channel = interaction.channel;
       if (!channel.name.startsWith('ticket-')) {
         return interaction.reply({ content: '❌ このコマンドはチケットチャンネルでのみ使用できます。', ephemeral: true });
