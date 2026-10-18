@@ -210,9 +210,15 @@ app.get('/callback', async (req, res) => {
       },
     });
 
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('[認証エラー] Discord API (Token) エラーレスポンス:', tokenResponse.status, errorText);
+      return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。環境変数を確認してください。');
+    }
+
     const tokenData = await tokenResponse.json();
     if (!tokenData.access_token) {
-      console.error('[認証エラー] Discordアクセストークンの取得に失敗しました:', tokenData);
+      console.error('[認証エラー] Discordアクセストークンが含まれていません:', tokenData);
       return res.status(400).send('❌ Discordアクセストークンの取得に失敗しました。');
     }
 
@@ -221,10 +227,17 @@ app.get('/callback', async (req, res) => {
         authorization: `Bearer ${tokenData.access_token}`,
       },
     });
+
+    if (!userResponse.ok) {
+      const errorText = await userResponse.text();
+      console.error('[認証エラー] Discord API (User) エラーレスポンス:', userResponse.status, errorText);
+      return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
+    }
+
     const userData = await userResponse.json();
 
     if (!userData.id) {
-      console.error('[認証エラー] ユーザー情報の取得に失敗しました:', userData);
+      console.error('[認証エラー] ユーザーIDが確認できませんでした:', userData);
       return res.status(400).send('❌ ユーザー情報の取得に失敗しました。');
     }
 
@@ -1024,7 +1037,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: `⏳ クールタイム中です。あと約 ${remainingMin} 分 (${remainingSec}秒) お待ちください。`, ephemeral: true });
       }
 
-      // タイムアウトを防ぐため、先に応答を遅延処理（deferReply）に設定
       await interaction.deferReply({ ephemeral: true });
 
       const status = interaction.options.getString('status');
@@ -1032,10 +1044,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       settings.lastOwnerStatusChange = now;
       saveSettings();
 
-      // バックグラウンドで人数カウンター（サーバー統計）を更新
       updateServerStats(guild).catch(err => console.error('ステータス更新エラー:', err));
 
-      // 最終的なメッセージを編集して送信
       await interaction.editReply({ content: `✅ 鯖主のステータスを **「${status}」** に設定しました！人数カウンターを更新しました。` });
     }
 
