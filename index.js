@@ -1562,4 +1562,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // ログイン処理
 // ============================================================
 
-client.login(process.env.DISCORD_TOKEN);
+// ============================================================
+// ログイン処理
+// ============================================================
+
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log('[Discord] ログイン処理が正常に完了しました。'))
+  .catch(err => console.error('[Discordログインエラー]:', err));
