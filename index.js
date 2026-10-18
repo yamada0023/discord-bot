@@ -1554,34 +1554,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 
+
 // ============================================================
-// Webサーバー起動 ＆ Discordログイン処理
+// ログイン ＆ トークン接続テスト
 // ============================================================
 
-// 1. 先にWebサーバーを即座に起動してRenderのポート監視に対応する
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Webサーバー] ポート ${PORT} で起動しました。`);
 });
-console.log('[デバッグ] Discordログイン処理を開始します。Tokenの有無:', !!process.env.DISCORD_TOKEN);
 
-client.login(process.env.DISCORD_TOKEN)
-  .then(() => {
-    console.log('[Discord] ログイン処理が正常に完了しました。');
+console.log('[デバッグ] Discord APIへの接続テストを開始します...');
+
+// REST APIでトークン自体の有効性を直接チェック
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+rest.get(Routes.user('@me'))
+  .then(user => {
+    console.log(`[RESTテスト成功] Botアカウント名: ${user.username} (${user.id})`);
+    console.log('[デバッグ] WebSocket(client.login) によるログインを試みます...');
     
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => {
-      console.log(`[Webサーバー] ポート ${PORT} で起動しました。`);
-    });
+    return client.login(process.env.DISCORD_TOKEN);
   })
-  .catch(err => {
-    console.error('[Discordログインエラー]:', err);
-  });
-// 2. それと並行してDiscordのログイン処理を行う
-client.login(process.env.DISCORD_TOKEN)
   .then(() => {
-    console.log('[Discord] ログイン処理が正常に完了しました。');
+    console.log('[Discord] ログイン処理（WebSocket）が正常に完了しました！');
   })
   .catch(err => {
-    console.error('[Discordログインエラー]:', err);
+    console.error('[Discord接続エラー]:', err);
   });
