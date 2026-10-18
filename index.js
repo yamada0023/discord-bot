@@ -1,5 +1,5 @@
 // ============================================================
-// Webサーバー & OAuth2 認証設定 (Express)
+// Webサーバー & OAuth2 認証設定 (Express) の準備
 // ============================================================
 const express = require('express');
 const app = express();
@@ -320,10 +320,6 @@ app.get('/callback', async (req, res) => {
     console.error('[OAuth2コールバック例外エラー]:', error);
     res.status(500).send('❌ 認証処理中にサーバーエラーが発生しました。');
   }
-});
-
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`[Webサーバー] ポート ${process.env.PORT || 3000} で起動しました。`);
 });
 
 
@@ -1516,7 +1512,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         const ticketEmbed = new EmbedBuilder()
           .setTitle(`🎫 チケット: ${user.tag}`)
-          .setDescription('お問い合わせ内容をご記入ください。運営スタッフが確認次第対応いたします。\n\n用事が済んだら下の **「🔒 チケットを閉じる」** ボタンを押してください。')
+          .setDescription('お問い合わせ内容をご記入ください。運営スタッフが確認次第対応いたします。\n\n用事が済んだら下の **<span>🔒 チケットを閉じる</span>** ボタンを押してください。')
           .setColor(0x00FF00)
           .setTimestamp();
 
@@ -1559,8 +1555,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 // ============================================================
-// ログイン処理
+// ログイン ＆ Webサーバー起動処理
 // ============================================================
+
 client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log('[Discord] ログイン処理が正常に完了しました。'))
-  .catch(err => console.error('[Discordログインエラー]:', err));
+  .then(() => {
+    console.log('[Discord] ログイン処理が正常に完了しました。');
+    
+    // Discordログイン成功後にWebサーバーを起動する
+    app.listen(process.env.PORT || 3000, () => {
+      console.log(`[Webサーバー] ポート ${process.env.PORT || 3000} で起動しました。`);
+    });
+  })
+  .catch(err => {
+    console.error('[Discordログインエラー]:', err);
+  });
