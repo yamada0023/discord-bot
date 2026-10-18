@@ -1563,7 +1563,20 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[Webサーバー] ポート ${PORT} で起動しました。`);
 });
+console.log('[デバッグ] Discordログイン処理を開始します。Tokenの有無:', !!process.env.DISCORD_TOKEN);
 
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => {
+    console.log('[Discord] ログイン処理が正常に完了しました。');
+    
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+      console.log(`[Webサーバー] ポート ${PORT} で起動しました。`);
+    });
+  })
+  .catch(err => {
+    console.error('[Discordログインエラー]:', err);
+  });
 // 2. それと並行してDiscordのログイン処理を行う
 client.login(process.env.DISCORD_TOKEN)
   .then(() => {
