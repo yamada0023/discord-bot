@@ -1037,7 +1037,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: `⏳ クールタイム中です。あと約 ${remainingMin} 分 (${remainingSec}秒) お待ちください。`, ephemeral: true });
       }
 
-      // 修正: クールタイム判定の直後に deferReply を呼んでタイムアウトを防ぐ
       await interaction.deferReply({ ephemeral: true });
 
       const status = interaction.options.getString('status');
