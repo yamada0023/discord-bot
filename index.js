@@ -1555,17 +1555,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 
 // ============================================================
-// ログイン ＆ Webサーバー起動処理
+// Webサーバー起動 ＆ Discordログイン処理
 // ============================================================
 
+// 1. 先にWebサーバーを即座に起動してRenderのポート監視に対応する
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`[Webサーバー] ポート ${PORT} で起動しました。`);
+});
+
+// 2. それと並行してDiscordのログイン処理を行う
 client.login(process.env.DISCORD_TOKEN)
   .then(() => {
     console.log('[Discord] ログイン処理が正常に完了しました。');
-    
-    // Discordログイン成功後にWebサーバーを起動する
-    app.listen(process.env.PORT || 3000, () => {
-      console.log(`[Webサーバー] ポート ${process.env.PORT || 3000} で起動しました。`);
-    });
   })
   .catch(err => {
     console.error('[Discordログインエラー]:', err);
