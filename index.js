@@ -959,14 +959,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const accountAgeDays = (Date.now() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24);
       const isSubAccount = accountAgeDays < 7;
 
-      // セキュリティログから同一IPやフィンガープリンティングで紐づく別アカウントを検索
       let linkedUserId = null;
       const guildSec = securityData[guild.id];
       if (guildSec) {
-        // IPまたはFPの逆引き
         for (const [ip, uid] of Object.entries(guildSec.ips || {})) {
           if (uid === targetUser.id) {
-            // このユーザーが使っているIPで、他のユーザーがいないかチェック
             for (const [otherIp, otherUid] of Object.entries(guildSec.ips || {})) {
               if (otherIp === ip && otherUid !== targetUser.id) {
                 linkedUserId = otherUid;
@@ -1027,14 +1024,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: `⏳ クールタイム中です。あと約 ${remainingMin} 分 (${remainingSec}秒) お待ちください。`, ephemeral: true });
       }
 
+      // タイムアウトを防ぐため、先に応答を遅延処理（deferReply）に設定
+      await interaction.deferReply({ ephemeral: true });
+
       const status = interaction.options.getString('status');
       settings.ownerOnlineStatus = status;
       settings.lastOwnerStatusChange = now;
       saveSettings();
 
-      await updateServerStats(guild);
+      // バックグラウンドで人数カウンター（サーバー統計）を更新
+      updateServerStats(guild).catch(err => console.error('ステータス更新エラー:', err));
 
-      await interaction.reply({ content: `✅ 鯖主のステータスを **「${status}」** に設定しました！人数カウンターを更新しました。`, ephemeral: true });
+      // 最終的なメッセージを編集して送信
+      await interaction.editReply({ content: `✅ 鯖主のステータスを **「${status}」** に設定しました！人数カウンターを更新しました。` });
     }
 
     else if (commandName === 'clear') {
